@@ -6,6 +6,7 @@ const multer      = require('multer');
 const fetch       = require('node-fetch');
 const PDFDocument = require('pdfkit');
 const pdfParse    = require('pdf-parse');
+const { PDFDocument: PDFLib } = require('pdf-lib');
 const { v4: uuid }= require('uuid');
 const fs          = require('fs');
 const path        = require('path');
@@ -240,8 +241,8 @@ app.get('/upload', requireAuth, (req, res) => {
       try{
         const res=await fetch('/api/extract',{method:'POST',body:fd});
         const json=await res.json(); if(!json.ok)throw new Error(json.error);
-        sessionStorage.setItem('prefill',JSON.stringify(json.data));
-        window.location.href='/new?prefill=1';
+        st.innerHTML='<span style="color:#4CAF50;font-weight:600">✓ Extracted '+json.photosFound+' photos — opening report editor...</span>';
+        setTimeout(()=>window.location.href='/edit/'+json.reportId, 800);
       }catch(e){st.innerHTML='<span style="color:#E53935">✗ '+e.message+'</span>';go.style.display='block';}
     }
     </script>
@@ -514,12 +515,55 @@ app.get('/edit/:id', requireAuth, (req, res) => {
 // ── API: Extract PDF ──────────────────────────────────────────────────────────
 app.post('/api/extract', requireAuth, upload.single('pdf'), async (req, res) => {
   try {
+    // ── 1. Extract text ───────────────────────────────────────────────────────
     const pdfData = await pdfParse(req.file.buffer);
-    const prompt = `Extract structured data from this field technician inspection report. Return ONLY a JSON object, no other text. Keys:
+    const pdfText = pdfData.text.substring(0, 6000);
+
+    // ── 2. Extract embedded photos from PDF ───────────────────────────────────
+    const pdfDoc = await PDFLib.load(req.file.buffer, { ignoreEncryption: true });
+    const refs = pdfDoc.context.enumerateIndirectObjects();
+
+    const PHOTO_CAPTIONS = [
+      'Indoor Head Unit', 'Indoor Unit Name Plate', 'Outdoor Unit',
+      'Outdoor Unit Name Plate', 'Pipe Run', 'Controller Screen',
+      'Remote Control', 'Circuit Breaker / RCD', 'Additional View'
+    ];
+
+    const extractedPhotos = [];
+    for (const [ref, obj] of refs) {
+      try {
+        if (obj && obj.dict) {
+          const subtype = obj.dict.get(pdfDoc.context.obj('Subtype'));
+          if (subtype && subtype.toString() === '/Image') {
+            const w = parseInt(obj.dict.get(pdfDoc.context.obj('Width'))?.toString() || '0');
+            const h = parseInt(obj.dict.get(pdfDoc.context.obj('Height'))?.toString() || '0');
+            if (w < 100 || h < 100) continue; // skip icons/logos
+            const bytes = obj.contents;
+            if (!bytes || bytes.length < 1000) continue;
+            const filter = obj.dict.get(pdfDoc.context.obj('Filter'))?.toString() || '';
+            const isJpeg = filter.includes('DCT');
+            const mime = isJpeg ? 'image/jpeg' : 'image/png';
+            extractedPhotos.push({
+              data: `data:${mime};base64,` + Buffer.from(bytes).toString('base64'),
+              caption: PHOTO_CAPTIONS[extractedPhotos.length] || `Photo ${extractedPhotos.length + 1}`
+            });
+            if (extractedPhotos.length >= 9) break; // max 9 photos
+          }
+        }
+      } catch(e) { /* skip bad objects */ }
+    }
+
+    // Pad to 9 photo slots (nulls for missing)
+    const photos = Array.from({ length: 9 }, (_, i) => extractedPhotos[i] || { data: null, caption: PHOTO_CAPTIONS[i] });
+
+    // ── 3. Claude extracts structured data from text ───────────────────────────
+    const prompt = `Extract structured data from this field technician inspection report. Return ONLY a JSON object, no other text. Use empty string "" if not found.
+
+Keys to extract:
 {"address":"","inspDate":"","inspTime":"","rptDate":"","insured":"","tech":"","item":"","model":"","age":"","fault":"","cable":"","pipe":"","pipeSize":"","mount":"","ownerDate":"","drainPump":"","findings":"","causeS":"","causeD":"","rec":"","summary":""}
 
 Report text:
-${pdfData.text.substring(0, 6000)}`;
+${pdfText}`;
 
     const response = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
@@ -529,9 +573,26 @@ ${pdfData.text.substring(0, 6000)}`;
     const json = await response.json();
     const raw = json.content?.[0]?.text || '{}';
     const data = JSON.parse(raw.replace(/```json|```/g,'').trim());
-    res.json({ ok:true, data });
+
+    // ── 4. Auto-create pending report in DB ───────────────────────────────────
+    const db = readDB();
+    const newReport = {
+      id: uuid(),
+      createdAt: new Date().toISOString(),
+      status: 'pending',
+      ...data,
+      photos,
+      reportText: ''
+    };
+    db.reports.push(newReport);
+    writeDB(db);
+
+    // Return report ID so client redirects straight to editor
+    res.json({ ok: true, reportId: newReport.id, photosFound: extractedPhotos.length });
+
   } catch(err) {
-    res.status(500).json({ ok:false, error:err.message });
+    console.error('Extract error:', err);
+    res.status(500).json({ ok: false, error: err.message });
   }
 });
 
