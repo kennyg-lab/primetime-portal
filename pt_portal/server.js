@@ -517,69 +517,136 @@ app.post('/api/extract', requireAuth, upload.single('pdf'), async (req, res) => 
   try {
     // ── 1. Extract text ───────────────────────────────────────────────────────
     const pdfData = await pdfParse(req.file.buffer);
-    const pdfText = pdfData.text.substring(0, 6000);
+    const pdfText = pdfData.text.substring(0, 8000);
 
     // ── 2. Extract embedded photos from PDF ───────────────────────────────────
     const pdfDoc = await PDFLib.load(req.file.buffer, { ignoreEncryption: true });
-    const refs = pdfDoc.context.enumerateIndirectObjects();
+    const refs   = pdfDoc.context.enumerateIndirectObjects();
 
-    const PHOTO_CAPTIONS = [
-      'Indoor Head Unit', 'Indoor Unit Name Plate', 'Outdoor Unit',
-      'Outdoor Unit Name Plate', 'Pipe Run', 'Controller Screen',
-      'Remote Control', 'Circuit Breaker / RCD', 'Additional View'
-    ];
-
-    const extractedPhotos = [];
+    const rawPhotos = [];
     for (const [ref, obj] of refs) {
       try {
         if (obj && obj.dict) {
           const subtype = obj.dict.get(pdfDoc.context.obj('Subtype'));
           if (subtype && subtype.toString() === '/Image') {
-            const w = parseInt(obj.dict.get(pdfDoc.context.obj('Width'))?.toString() || '0');
+            const w = parseInt(obj.dict.get(pdfDoc.context.obj('Width'))?.toString()  || '0');
             const h = parseInt(obj.dict.get(pdfDoc.context.obj('Height'))?.toString() || '0');
-            if (w < 100 || h < 100) continue; // skip icons/logos
+            if (w < 150 || h < 150) continue;       // skip icons/logos
             const bytes = obj.contents;
-            if (!bytes || bytes.length < 1000) continue;
-            const filter = obj.dict.get(pdfDoc.context.obj('Filter'))?.toString() || '';
-            const isJpeg = filter.includes('DCT');
-            const mime = isJpeg ? 'image/jpeg' : 'image/png';
-            extractedPhotos.push({
-              data: `data:${mime};base64,` + Buffer.from(bytes).toString('base64'),
-              caption: PHOTO_CAPTIONS[extractedPhotos.length] || `Photo ${extractedPhotos.length + 1}`
-            });
-            if (extractedPhotos.length >= 9) break; // max 9 photos
+            if (!bytes || bytes.length < 2000) continue;
+            const filter  = obj.dict.get(pdfDoc.context.obj('Filter'))?.toString() || '';
+            const isJpeg  = filter.includes('DCT');
+            const mime    = isJpeg ? 'image/jpeg' : 'image/png';
+            const b64data = `data:${mime};base64,` + Buffer.from(bytes).toString('base64');
+            rawPhotos.push({ data: b64data, mime, w, h });
+            if (rawPhotos.length >= 9) break;
           }
         }
       } catch(e) { /* skip bad objects */ }
     }
 
-    // Pad to 9 photo slots (nulls for missing)
-    const photos = Array.from({ length: 9 }, (_, i) => extractedPhotos[i] || { data: null, caption: PHOTO_CAPTIONS[i] });
+    // ── 3. Claude labels each photo using vision ──────────────────────────────
+    let labelledPhotos = [];
+    if (rawPhotos.length > 0) {
+      // Build multi-image message — Claude looks at all photos and labels them
+      const imageContent = rawPhotos.map((p, i) => ([
+        {
+          type: 'text',
+          text: `Photo ${i + 1}:`
+        },
+        {
+          type: 'image',
+          source: { type: 'base64', media_type: p.mime, data: p.data.split(',')[1] }
+        }
+      ])).flat();
 
-    // ── 3. Claude extracts structured data from text ───────────────────────────
-    const prompt = `Extract structured data from this field technician inspection report. Return ONLY a JSON object, no other text. Use empty string "" if not found.
+      imageContent.push({
+        type: 'text',
+        text: `You are looking at ${rawPhotos.length} site inspection photos from an electrical/HVAC job.
+For each photo, write a short descriptive caption (3-6 words) describing exactly what is shown.
+Be specific — e.g. "Indoor split system head unit", "Outdoor condenser unit on wall bracket", "Switchboard circuit breakers", "Pipe run on exterior wall", "Controller showing fault code E3", "Remote control unit", "Name plate label", etc.
+Return ONLY a JSON array of caption strings, one per photo, in order. No other text.
+Example: ["Indoor head unit on wall", "Outdoor condenser wall mounted", "Electrical switchboard"]`
+      });
 
-Keys to extract:
-{"address":"","inspDate":"","inspTime":"","rptDate":"","insured":"","tech":"","item":"","model":"","age":"","fault":"","cable":"","pipe":"","pipeSize":"","mount":"","ownerDate":"","drainPump":"","findings":"","causeS":"","causeD":"","rec":"","summary":""}
+      try {
+        const visionRes = await fetch('https://api.anthropic.com/v1/messages', {
+          method: 'POST',
+          headers: { 'Content-Type':'application/json', 'x-api-key':ANTHROPIC_KEY, 'anthropic-version':'2023-06-01' },
+          body: JSON.stringify({
+            model: 'claude-sonnet-4-20250514',
+            max_tokens: 400,
+            messages: [{ role: 'user', content: imageContent }]
+          })
+        });
+        const visionJson = await visionRes.json();
+        const captionRaw = visionJson.content?.[0]?.text || '[]';
+        const captions   = JSON.parse(captionRaw.replace(/```json|```/g,'').trim());
+        labelledPhotos   = rawPhotos.map((p, i) => ({
+          data:    p.data,
+          caption: captions[i] || `Photo ${i + 1}`
+        }));
+      } catch(e) {
+        // Vision failed — use generic captions
+        labelledPhotos = rawPhotos.map((p, i) => ({ data: p.data, caption: `Photo ${i + 1}` }));
+      }
+    }
+
+    // Pad to 9 slots
+    const photos = Array.from({ length: 9 }, (_, i) =>
+      labelledPhotos[i] || { data: null, caption: `Photo ${i + 1}` }
+    );
+
+    // ── 4. Claude extracts structured data from text ──────────────────────────
+    const dataPrompt = `Extract structured data from this field technician inspection report PDF text.
+Return ONLY a valid JSON object — no markdown, no extra text, no comments.
+If a field is not found, use empty string "".
+For findings/causeD/summary — write full sentences based on what's in the report.
+For causeS — just 2-4 words e.g. "Water ingress", "Storm damage", "Electrical fault".
+
+JSON keys:
+{
+  "address": "full property address",
+  "inspDate": "inspection date",
+  "inspTime": "inspection time",
+  "rptDate": "report date",
+  "insured": "name of insured person met",
+  "tech": "technician name",
+  "item": "item inspected e.g. Split System Air Conditioner",
+  "model": "make and model",
+  "age": "approximate age",
+  "fault": "fault code if any",
+  "cable": "circuit cable size",
+  "pipe": "pipe run length",
+  "pipeSize": "pipe size",
+  "mount": "how outdoor unit is mounted",
+  "ownerDate": "date owner said damage occurred",
+  "drainPump": "Yes or No",
+  "findings": "full inspection findings paragraph",
+  "causeS": "cause in 2-4 words",
+  "causeD": "detailed cause paragraph",
+  "rec": "recommendation sentence",
+  "summary": "summary paragraph"
+}
 
 Report text:
 ${pdfText}`;
 
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
+    const dataRes  = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: { 'Content-Type':'application/json', 'x-api-key':ANTHROPIC_KEY, 'anthropic-version':'2023-06-01' },
-      body: JSON.stringify({ model:'claude-sonnet-4-20250514', max_tokens:800, messages:[{role:'user',content:prompt}] })
+      body: JSON.stringify({ model:'claude-sonnet-4-20250514', max_tokens:1200, messages:[{role:'user',content:dataPrompt}] })
     });
-    const json = await response.json();
-    const raw = json.content?.[0]?.text || '{}';
-    const data = JSON.parse(raw.replace(/```json|```/g,'').trim());
+    const dataJson = await dataRes.json();
+    const dataRaw  = dataJson.content?.[0]?.text || '{}';
+    const data     = JSON.parse(dataRaw.replace(/```json|```/g,'').trim());
 
-    // ── 4. Auto-create pending report in DB ───────────────────────────────────
+    // ── 5. Create pending report in DB ────────────────────────────────────────
     const db = readDB();
     const newReport = {
-      id: uuid(),
+      id:        uuid(),
       createdAt: new Date().toISOString(),
-      status: 'pending',
+      status:    'pending',
       ...data,
       photos,
       reportText: ''
@@ -587,8 +654,7 @@ ${pdfText}`;
     db.reports.push(newReport);
     writeDB(db);
 
-    // Return report ID so client redirects straight to editor
-    res.json({ ok: true, reportId: newReport.id, photosFound: extractedPhotos.length });
+    res.json({ ok: true, reportId: newReport.id, photosFound: labelledPhotos.length });
 
   } catch(err) {
     console.error('Extract error:', err);
