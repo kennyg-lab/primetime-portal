@@ -427,7 +427,16 @@ function editorPage(report) {
         const slot=document.createElement('div');slot.className='ph-slot';slot.id='slot'+i;
         slot.onclick=()=>document.getElementById('fi'+i).click();
         slot.innerHTML='<div class="ph-pl">+</div><div class="ph-n">Photo '+(i+1)+'</div><div class="ph-ov">Change</div>';
-        if(photoData[i]){slot.classList.add('filled');const img=document.createElement('img');img.src=photoData[i];slot.insertBefore(img,slot.firstChild);}
+        if(photoData[i]){
+          slot.classList.add('filled');
+          const img=document.createElement('img');img.src=photoData[i];slot.insertBefore(img,slot.firstChild);
+          // Delete button
+          const del=document.createElement('button');
+          del.textContent='✕';
+          del.style.cssText='position:absolute;top:4px;right:4px;background:rgba(0,0,0,0.7);color:#fff;border:none;border-radius:50%;width:22px;height:22px;font-size:11px;cursor:pointer;z-index:10;display:flex;align-items:center;justify-content:center;line-height:1';
+          del.onclick=e=>{e.stopPropagation();deletePh(i);};
+          slot.appendChild(del);
+        }
         const cw=document.createElement('div');cw.className='cap-in';
         const ci=document.createElement('input');ci.type='text';ci.id='cap'+i;
         ci.value=photoCaptions[i]||lbl;ci.placeholder=lbl;
@@ -435,9 +444,28 @@ function editorPage(report) {
       });
     }
 
+    function deletePh(i){
+      photoData[i]=null;
+      photoCaptions[i]=LABELS[i];
+      buildPhotos();
+    }
+
     function loadPh(e,i){
       const f=e.target.files[0];if(!f)return;
-      const r=new FileReader();r.onload=ev=>{photoData[i]=ev.target.result;const s=document.getElementById('slot'+i);s.classList.add('filled');const o=s.querySelector('img');if(o)o.remove();const img=document.createElement('img');img.src=ev.target.result;s.insertBefore(img,s.firstChild);};r.readAsDataURL(f);
+      const r=new FileReader();r.onload=ev=>{
+        photoData[i]=ev.target.result;
+        const s=document.getElementById('slot'+i);
+        s.classList.add('filled');
+        const o=s.querySelector('img');if(o)o.remove();
+        const img=document.createElement('img');img.src=ev.target.result;s.insertBefore(img,s.firstChild);
+        // Add delete button
+        const old=s.querySelector('button');if(old)old.remove();
+        const del=document.createElement('button');
+        del.textContent='✕';
+        del.style.cssText='position:absolute;top:4px;right:4px;background:rgba(0,0,0,0.7);color:#fff;border:none;border-radius:50%;width:22px;height:22px;font-size:11px;cursor:pointer;z-index:10;display:flex;align-items:center;justify-content:center;line-height:1';
+        del.onclick=e=>{e.stopPropagation();deletePh(i);};
+        s.appendChild(del);
+      };r.readAsDataURL(f);
     }
 
     function prefill(d){
@@ -619,38 +647,47 @@ Example: ["Indoor head unit on wall", "Outdoor condenser wall mounted", "Electri
     );
 
     // ── 4. Claude extracts structured data from text ──────────────────────────
-    const dataPrompt = `Extract structured data from this field technician inspection report PDF text.
-Return ONLY a valid JSON object — no markdown, no extra text, no comments.
-If a field is not found, use empty string "".
-For findings/causeD/summary — write full sentences based on what's in the report.
-For causeS — just 2-4 words e.g. "Water ingress", "Storm damage", "Electrical fault".
+    const dataPrompt = `You are extracting data from a field technician's inspection report. 
+Read the text carefully and extract every piece of information you can find.
+Return ONLY a valid JSON object — no markdown fences, no comments, no extra text.
+Use "" for fields not found. Do NOT use placeholder text like "full property address" — extract the actual values.
 
-JSON keys:
+IMPORTANT RULES:
+- "address": extract the actual street address from the report e.g. "23 Little St, Karrinyup WA 6018"
+- "item": extract what was inspected e.g. "Split System Air Conditioner", "Hot Water System", "Switchboard"  
+- "model": extract make and model number e.g. "Elexa-12hrdn1", "Daikin FTXM25"
+- "findings": write 2-3 sentences describing what was found on site based on the report
+- "causeS": 2-4 words only e.g. "Water ingress", "Storm damage", "Power surge"
+- "causeD": 2-3 sentences explaining the cause in detail
+- "rec": one clear sentence recommending repair or replacement
+- "summary": 2-3 sentences summarising the whole inspection and outcome
+
+Return this exact JSON structure with real extracted values:
 {
-  "address": "full property address",
-  "inspDate": "inspection date",
-  "inspTime": "inspection time",
-  "rptDate": "report date",
-  "insured": "name of insured person met",
-  "tech": "technician name",
-  "item": "item inspected e.g. Split System Air Conditioner",
-  "model": "make and model",
-  "age": "approximate age",
-  "fault": "fault code if any",
-  "cable": "circuit cable size",
-  "pipe": "pipe run length",
-  "pipeSize": "pipe size",
-  "mount": "how outdoor unit is mounted",
-  "ownerDate": "date owner said damage occurred",
-  "drainPump": "Yes or No",
-  "findings": "full inspection findings paragraph",
-  "causeS": "cause in 2-4 words",
-  "causeD": "detailed cause paragraph",
-  "rec": "recommendation sentence",
-  "summary": "summary paragraph"
+  "address": "",
+  "inspDate": "",
+  "inspTime": "",
+  "rptDate": "",
+  "insured": "",
+  "tech": "",
+  "item": "",
+  "model": "",
+  "age": "",
+  "fault": "",
+  "cable": "",
+  "pipe": "",
+  "pipeSize": "",
+  "mount": "",
+  "ownerDate": "",
+  "drainPump": "",
+  "findings": "",
+  "causeS": "",
+  "causeD": "",
+  "rec": "",
+  "summary": ""
 }
 
-Report text:
+Report text to extract from:
 ${pdfText}`;
 
     const dataRes  = await fetch('https://api.anthropic.com/v1/messages', {
@@ -809,5 +846,4 @@ app.listen(PORT,()=>{
   console.log(`\n  Prime Time Report Portal`);
   console.log(`  http://localhost:${PORT}  |  Password: ${PORTAL_PASSWORD}\n`);
 });
-
 
