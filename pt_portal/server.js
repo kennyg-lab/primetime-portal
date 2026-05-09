@@ -1,4 +1,4 @@
-'use strict';
+use strict';
 
 const express     = require('express');
 const session     = require('express-session');
@@ -499,6 +499,20 @@ function editorPage(report) {
         const el=document.getElementById(to);
         if(el && d[from] !== undefined && d[from] !== '') el.value=d[from];
       });
+      // Set radio buttons from prefill data
+      if(d.drainPump){
+        const r=document.querySelector(`input[name="dp"][value="${d.drainPump}"]`);
+        if(r) r.checked=true;
+      }
+      if(d.wearTear){
+        const val = d.wearTear.toLowerCase().includes('no') ? 'No signs observed' : 'Signs present';
+        const r=document.querySelector(`input[name="wt"][value="${val}"]`);
+        if(r) r.checked=true;
+      }
+      if(d.leakSigns){
+        const r=document.querySelector(`input[name="ls"][value="${d.leakSigns}"]`);
+        if(r) r.checked=true;
+      }
       // Photos — load image data AND captions
       if(d.photos && Array.isArray(d.photos)){
         d.photos.forEach((p,i)=>{
@@ -661,72 +675,144 @@ Example: ["Indoor head unit on wall", "Outdoor condenser wall mounted", "Electri
       labelledPhotos[i] || { data: null, caption: `Photo ${i + 1}` }
     );
 
-    // ── 4. Claude extracts structured data — iAudit format aware ─────────────
-    const cleanedText = pdfText
-      .replace(/\n([A-Za-z])\n([A-Za-z])\n([A-Za-z])/g, '$1$2$3')
-      .replace(/([a-z])\n([a-z])/g, '$1$2')
-      .replace(/\n{3,}/g, '\n\n')
-      .trim();
+    // ── 4. Parse iAudit text — positional parser ─────────────────────────────
+    const cleanedText = pdfText.replace(/\n{3,}/g, '\n\n').trim();
+    const lines = pdfText.split('\n').map(l => l.trim()).filter(Boolean);
+    const li = (label) => lines.findIndex(l => l === label);
+    const ln = (i, offset=1) => (i !== -1 && lines[i+offset]) ? lines[i+offset] : '';
 
-    const dataPrompt = `You are reading an iAudit field inspection report from Prime Time Electricians.
-Extract all data and also write the findings, cause, recommendation and summary based on what the report contains.
-Return ONLY a valid JSON object — no markdown, no comments.
+    // PAGE 1 HEADER — iAudit puts values BEFORE their labels
+    // Line order: Date(label) → 0 → datevalue → addr1 → addr2 → "Site Address"(label)
+    const dateLabel = li('Date');
+    const siteLabel = li('Site Address');
+    const dateRaw   = dateLabel !== -1 ? ln(dateLabel, 2) : '';
+    const dtMatch   = dateRaw.match(/(\d+\s+\w+\s+\d{4})\s+(\d+:\d+\s+\w+)/);
+    const inspDate  = dtMatch ? dtMatch[1] : dateRaw;
+    const inspTime  = dtMatch ? dtMatch[2] : '';
 
-The iAudit PDF uses these exact label names — map them as follows:
-- "Site Address" → address
-- "Date" → inspDate (also split out time into inspTime e.g. "10:59 AWST")
-- "Full Name of Person you met with" → insured
-- "Tech Signature" (name below it) → tech
-- "Item name" → item (this is what was inspected e.g. "Switchboard RCBOs")
-- "Make and Model" → model
-- "Approximate Age of Item" → age
-- "Fault Codes Shown on Controller" → fault (use "" if N/A)
-- "Circuit Cable Size" → cable
-- "Date of loss / Incident" → ownerDate
-- "Damage is the Caused By ?" → causeS (2-4 words)
-- "Is there a drain pump?" → drainPump
-- "Any Signs of Wear and Tear not related to the Claim ?" → wearTear
-- Use "rptDate" = same as inspDate
+    // Address lines appear between date value and "Site Address" label
+    const addr1 = siteLabel > 0 ? lines[siteLabel - 2] : '';
+    const addr2 = siteLabel > 0 ? lines[siteLabel - 1] : '';
+    const address = (addr2 && !addr2.includes('AWST') && addr2 !== '0')
+      ? `${addr1} ${addr2}`.trim() : addr1;
 
-For these fields write proper sentences based on everything in the report:
-- "findings": 2-3 sentences describing what the technician found on site
-- "causeD": 2-3 sentences explaining how the damage occurred and what was affected  
-- "rec": one sentence — recommend repair or replacement based on the report
-- "summary": 2-3 sentences summarising the inspection, cause and outcome
+    // Insured and tech — normal label then value
+    const insuredLabel = li('Full Name of Person you met with');
+    const insured = insuredLabel !== -1 ? ln(insuredLabel) : '';
+    const techLabel = li('Tech Signature');
+    let tech = '';
+    if (techLabel !== -1) {
+      for (let j = techLabel + 1; j < Math.min(techLabel + 5, lines.length); j++) {
+        const v = lines[j];
+        if (v && !/\d+\s+\w+\s+\d{4}/.test(v) && !v.startsWith('Private') && v !== '8') {
+          tech = v; break;
+        }
+      }
+    }
 
-Return this JSON with real values extracted:
+    // ITEM BLOCK — 4 labels in a row then 4 values in same order
+    // Item Inspected, Item name, Date of loss, Make and Model → Other, name, date, model
+    const itemInspIdx = li('Item Inspected');
+    const itemName    = itemInspIdx !== -1 ? lines[itemInspIdx + 5] : ''; // skip 4 labels → value 2
+    const itemModel   = itemInspIdx !== -1 ? lines[itemInspIdx + 7] : ''; // value 4
+    const itemDate    = itemInspIdx !== -1 ? lines[itemInspIdx + 6] : ''; // value 3
+
+    // SINGLE-VALUE fields — label then value on next line
+    const getNext = (label) => {
+      const i = li(label);
+      if (i === -1) return '';
+      const v = ln(i);
+      return v && !v.startsWith('Photo') && !v.startsWith('Private') ? v : '';
+    };
+
+    // TRIPLE BLOCK — Circuit Cable Size, Wear&Tear, Damage → values follow
+    const cableIdx = li('Circuit Cable Size');
+    const cable    = cableIdx !== -1 ? lines[cableIdx + 3] : '';
+    const wearTear = cableIdx !== -1 ? lines[cableIdx + 4] : '';
+    const causeS   = cableIdx !== -1 ? lines[cableIdx + 5] : '';
+
+    const parsedData = {
+      address,
+      inspDate,
+      inspTime,
+      rptDate:   inspDate,
+      insured,
+      tech,
+      item:      itemName  || getNext('Item name'),
+      model:     itemModel || getNext('Make and Model'),
+      ownerDate: itemDate  || getNext('Date of loss / Incident'),
+      age:       getNext('Approximate Age of Item'),
+      voltage:   getNext('Voltage Reading from Circuit'),
+      fault:     getNext('Fault Codes Shown on Controller').replace(/^N\/A$/i, ''),
+      cutout:    getNext('Measurements of cut out'),
+      cable:     cable    || getNext('Circuit Cable Size'),
+      wearTear:  wearTear || '',
+      causeS:    causeS   || getNext('Damage is the Caused By ?'),
+      yearBuilt: getNext('What year was the property built ?'),
+      roofType:  getNext('Roof type ?'),
+      pipe:      getNext('Length of pipe run'),
+      pipeSize:  getNext('Pipe size'),
+      mount:     getNext('How is the outdoor unit mounted'),
+      drainPump: getNext('Is there a drain pump?'),
+    };    // Now ask Claude to write ALL narrative fields from the full report text
+    const dataPrompt = `You are a senior electrical inspector writing a professional insurance inspection report for Prime Time Electricians.
+
+Read the structured data and write a complete professional narrative. Return ONLY valid JSON — no markdown, no comments.
+
+Structured data extracted from iAudit report:
+- Address: ${parsedData.address}
+- Date: ${parsedData.inspDate} ${parsedData.inspTime}
+- Insured: ${parsedData.insured}
+- Technician: ${parsedData.tech}
+- Item inspected: ${parsedData.item}
+- Make/Model: ${parsedData.model}
+- Age: ${parsedData.age}
+- Fault code: ${parsedData.fault || 'None'}
+- Cable size: ${parsedData.cable}
+- Voltage reading: ${parsedData.voltage || 'Not recorded'}
+- Cutout measurements: ${parsedData.cutout || 'Not recorded'}
+- Owner reported date: ${parsedData.ownerDate}
+- Cause of damage: ${parsedData.causeS}
+- Wear & tear unrelated: ${parsedData.wearTear}
+- Property year built: ${parsedData.yearBuilt}
+- Roof type: ${parsedData.roofType}
+
+Write these narrative fields — be specific, mention the actual item, brand, measurements and property details:
+- "findings": 3-4 sentences — describe the property, what was inspected, condition found, readings taken
+- "causeD": 3-4 sentences — explain exactly how the damage occurred, what components were affected, why it needs attention
+- "rec": 1-2 sentences — clear recommendation, repair or full replacement and why
+- "summary": 3-4 sentences — standalone executive summary covering property, item, cause and outcome
+
+Return this exact JSON:
 {
-  "address": "",
-  "inspDate": "",
-  "inspTime": "",
-  "rptDate": "",
-  "insured": "",
-  "tech": "",
-  "item": "",
-  "model": "",
-  "age": "",
-  "fault": "",
-  "cable": "",
-  "pipe": "",
-  "pipeSize": "",
-  "mount": "",
-  "ownerDate": "",
-  "drainPump": "",
-  "wearTear": "",
-  "findings": "",
-  "causeS": "",
-  "causeD": "",
-  "rec": "",
-  "summary": ""
-}
-
-iAudit report text:
-${cleanedText}`;
+  "address": "${parsedData.address}",
+  "inspDate": "${parsedData.inspDate}",
+  "inspTime": "${parsedData.inspTime}",
+  "rptDate": "${parsedData.rptDate}",
+  "insured": "${parsedData.insured}",
+  "tech": "${parsedData.tech}",
+  "item": "${parsedData.item}",
+  "model": "${parsedData.model}",
+  "age": "${parsedData.age}",
+  "fault": "${parsedData.fault}",
+  "cable": "${parsedData.cable}",
+  "pipe": "${parsedData.pipe}",
+  "pipeSize": "${parsedData.pipeSize}",
+  "mount": "${parsedData.mount}",
+  "ownerDate": "${parsedData.ownerDate}",
+  "drainPump": "${parsedData.drainPump}",
+  "wearTear": "${parsedData.wearTear}",
+  "causeS": "${parsedData.causeS}",
+  "findings": "WRITE HERE",
+  "causeD": "WRITE HERE",
+  "rec": "WRITE HERE",
+  "summary": "WRITE HERE"
+}`;
 
     const dataRes  = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: { 'Content-Type':'application/json', 'x-api-key':ANTHROPIC_KEY, 'anthropic-version':'2023-06-01' },
-      body: JSON.stringify({ model:'claude-sonnet-4-20250514', max_tokens:1500, messages:[{role:'user',content:dataPrompt}] })
+      body: JSON.stringify({ model:'claude-sonnet-4-20250514', max_tokens:2000, messages:[{role:'user',content:dataPrompt}] })
     });
     const dataJson = await dataRes.json();
     const dataRaw  = dataJson.content?.[0]?.text || '{}';
@@ -879,4 +965,3 @@ app.listen(PORT,()=>{
   console.log(`\n  Prime Time Report Portal`);
   console.log(`  http://localhost:${PORT}  |  Password: ${PORTAL_PASSWORD}\n`);
 });
-
