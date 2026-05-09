@@ -236,14 +236,23 @@ app.get('/upload', requireAuth, (req, res) => {
     dz.ondrop=e=>{e.preventDefault();dz.style.borderColor='#DDD';dz.style.background='#FAFAFA';pick(e.dataTransfer.files[0])};
     function pick(f){ if(!f||!f.name.endsWith('.pdf')){st.innerHTML='<span style="color:#E53935">Please select a PDF file</span>';return;} file=f; dz.style.borderColor='#4CAF50'; st.innerHTML='<span style="color:#4CAF50;font-weight:600">✓ '+f.name+'</span>'; go.style.display='block'; }
     async function extract(){
-      if(!file)return; st.innerHTML='<span style="color:#888">Reading PDF and extracting data — takes ~15 seconds...</span>'; go.style.display='none';
-      const fd=new FormData(); fd.append('pdf',file);
+      if(!file)return;
+      st.innerHTML='<span style="color:#888">Reading iAudit report — extracting data and photos, takes ~20 seconds...</span>';
+      go.style.display='none';
+      const fd=new FormData();
+      fd.append('pdf',file);
       try{
         const res=await fetch('/api/extract',{method:'POST',body:fd});
-        const json=await res.json(); if(!json.ok)throw new Error(json.error);
+        const json=await res.json();
+        if(!json.ok)throw new Error(json.error);
+        // Clear any cached session data to ensure clean slate
+        sessionStorage.clear();
         st.innerHTML='<span style="color:#4CAF50;font-weight:600">✓ Extracted '+json.photosFound+' photos — opening report editor...</span>';
         setTimeout(()=>window.location.href='/edit/'+json.reportId, 800);
-      }catch(e){st.innerHTML='<span style="color:#E53935">✗ '+e.message+'</span>';go.style.display='block';}
+      }catch(e){
+        st.innerHTML='<span style="color:#E53935">✗ '+e.message+'</span>';
+        go.style.display='block';
+      }
     }
     </script>
   `));
@@ -470,7 +479,12 @@ function editorPage(report) {
 
     function prefill(d){
       if(!d)return;
-      // Map server-side field names → form input ids
+      // Clear ALL fields first — fresh slate for every new report
+      document.querySelectorAll('input[type=text],textarea').forEach(el=>{ el.value=''; });
+      photoData.fill(null);
+      photoCaptions.splice(0,9,...LABELS);
+
+      // Map server field names → form input ids
       const MAP={
         address:'address', inspDate:'inspDate', inspTime:'inspTime', rptDate:'rptDate',
         insured:'insured', tech:'tech', techSig:'techSig',
@@ -478,7 +492,8 @@ function editorPage(report) {
         cable:'cable', pipe:'pipe', pipeSize:'pipeSize', mount:'mount',
         ownerDate:'ownerDate',
         findings:'findTxt', causeS:'causeS', causeD:'causeD',
-        rec:'recTxt', repair:'repTxt', summary:'sumTxt'
+        rec:'recTxt', repair:'repTxt', summary:'sumTxt',
+        wearTear:'wearTear'
       };
       Object.entries(MAP).forEach(([from,to])=>{
         const el=document.getElementById(to);
@@ -487,8 +502,8 @@ function editorPage(report) {
       // Photos — load image data AND captions
       if(d.photos && Array.isArray(d.photos)){
         d.photos.forEach((p,i)=>{
-          if(p){ 
-            if(p.data)  photoData[i]=p.data;
+          if(p){
+            if(p.data)    photoData[i]=p.data;
             if(p.caption) photoCaptions[i]=p.caption;
           }
         });
@@ -646,23 +661,40 @@ Example: ["Indoor head unit on wall", "Outdoor condenser wall mounted", "Electri
       labelledPhotos[i] || { data: null, caption: `Photo ${i + 1}` }
     );
 
-    // ── 4. Claude extracts structured data from text ──────────────────────────
-    const dataPrompt = `You are extracting data from a field technician's inspection report. 
-Read the text carefully and extract every piece of information you can find.
-Return ONLY a valid JSON object — no markdown fences, no comments, no extra text.
-Use "" for fields not found. Do NOT use placeholder text like "full property address" — extract the actual values.
+    // ── 4. Claude extracts structured data — iAudit format aware ─────────────
+    const cleanedText = pdfText
+      .replace(/\n([A-Za-z])\n([A-Za-z])\n([A-Za-z])/g, '$1$2$3')
+      .replace(/([a-z])\n([a-z])/g, '$1$2')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
 
-IMPORTANT RULES:
-- "address": extract the actual street address from the report e.g. "23 Little St, Karrinyup WA 6018"
-- "item": extract what was inspected e.g. "Split System Air Conditioner", "Hot Water System", "Switchboard"  
-- "model": extract make and model number e.g. "Elexa-12hrdn1", "Daikin FTXM25"
-- "findings": write 2-3 sentences describing what was found on site based on the report
-- "causeS": 2-4 words only e.g. "Water ingress", "Storm damage", "Power surge"
-- "causeD": 2-3 sentences explaining the cause in detail
-- "rec": one clear sentence recommending repair or replacement
-- "summary": 2-3 sentences summarising the whole inspection and outcome
+    const dataPrompt = `You are reading an iAudit field inspection report from Prime Time Electricians.
+Extract all data and also write the findings, cause, recommendation and summary based on what the report contains.
+Return ONLY a valid JSON object — no markdown, no comments.
 
-Return this exact JSON structure with real extracted values:
+The iAudit PDF uses these exact label names — map them as follows:
+- "Site Address" → address
+- "Date" → inspDate (also split out time into inspTime e.g. "10:59 AWST")
+- "Full Name of Person you met with" → insured
+- "Tech Signature" (name below it) → tech
+- "Item name" → item (this is what was inspected e.g. "Switchboard RCBOs")
+- "Make and Model" → model
+- "Approximate Age of Item" → age
+- "Fault Codes Shown on Controller" → fault (use "" if N/A)
+- "Circuit Cable Size" → cable
+- "Date of loss / Incident" → ownerDate
+- "Damage is the Caused By ?" → causeS (2-4 words)
+- "Is there a drain pump?" → drainPump
+- "Any Signs of Wear and Tear not related to the Claim ?" → wearTear
+- Use "rptDate" = same as inspDate
+
+For these fields write proper sentences based on everything in the report:
+- "findings": 2-3 sentences describing what the technician found on site
+- "causeD": 2-3 sentences explaining how the damage occurred and what was affected  
+- "rec": one sentence — recommend repair or replacement based on the report
+- "summary": 2-3 sentences summarising the inspection, cause and outcome
+
+Return this JSON with real values extracted:
 {
   "address": "",
   "inspDate": "",
@@ -680,6 +712,7 @@ Return this exact JSON structure with real extracted values:
   "mount": "",
   "ownerDate": "",
   "drainPump": "",
+  "wearTear": "",
   "findings": "",
   "causeS": "",
   "causeD": "",
@@ -687,13 +720,13 @@ Return this exact JSON structure with real extracted values:
   "summary": ""
 }
 
-Report text to extract from:
-${pdfText}`;
+iAudit report text:
+${cleanedText}`;
 
     const dataRes  = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: { 'Content-Type':'application/json', 'x-api-key':ANTHROPIC_KEY, 'anthropic-version':'2023-06-01' },
-      body: JSON.stringify({ model:'claude-sonnet-4-20250514', max_tokens:1200, messages:[{role:'user',content:dataPrompt}] })
+      body: JSON.stringify({ model:'claude-sonnet-4-20250514', max_tokens:1500, messages:[{role:'user',content:dataPrompt}] })
     });
     const dataJson = await dataRes.json();
     const dataRaw  = dataJson.content?.[0]?.text || '{}';
