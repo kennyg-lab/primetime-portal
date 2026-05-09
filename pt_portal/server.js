@@ -407,6 +407,7 @@ function editorPage(report) {
     const INIT=${prefillJSON};
     const LABELS=['Indoor Head Unit','Indoor Unit Name Plate','Outdoor Unit','Outdoor Unit Name Plate','Pipe Run','Controller Screen','Remote Control','Circuit Breaker / RCD','Additional View'];
     const photoData=new Array(9).fill(null);
+    const photoCaptions=[...LABELS]; // starts with defaults, overwritten by prefill
     const naState={};
 
     function toggleNA(id){
@@ -428,7 +429,8 @@ function editorPage(report) {
         slot.innerHTML='<div class="ph-pl">+</div><div class="ph-n">Photo '+(i+1)+'</div><div class="ph-ov">Change</div>';
         if(photoData[i]){slot.classList.add('filled');const img=document.createElement('img');img.src=photoData[i];slot.insertBefore(img,slot.firstChild);}
         const cw=document.createElement('div');cw.className='cap-in';
-        const ci=document.createElement('input');ci.type='text';ci.id='cap'+i;ci.value=lbl;ci.placeholder=lbl;
+        const ci=document.createElement('input');ci.type='text';ci.id='cap'+i;
+        ci.value=photoCaptions[i]||lbl;ci.placeholder=lbl;
         cw.appendChild(ci);wrap.appendChild(slot);wrap.appendChild(cw);grid.appendChild(wrap);
       });
     }
@@ -440,11 +442,30 @@ function editorPage(report) {
 
     function prefill(d){
       if(!d)return;
-      ['address','inspDate','inspTime','rptDate','insured','tech','techSig','item','model','age','fault','cable','pipe','pipeSize','mount','ownerDate','findTxt','causeS','causeD','recTxt','repTxt','sumTxt'].forEach(id=>{
-        const el=document.getElementById(id); if(el&&d[id]!==undefined)el.value=d[id];
+      // Map server-side field names → form input ids
+      const MAP={
+        address:'address', inspDate:'inspDate', inspTime:'inspTime', rptDate:'rptDate',
+        insured:'insured', tech:'tech', techSig:'techSig',
+        item:'item', model:'model', age:'age', fault:'fault',
+        cable:'cable', pipe:'pipe', pipeSize:'pipeSize', mount:'mount',
+        ownerDate:'ownerDate',
+        findings:'findTxt', causeS:'causeS', causeD:'causeD',
+        rec:'recTxt', repair:'repTxt', summary:'sumTxt'
+      };
+      Object.entries(MAP).forEach(([from,to])=>{
+        const el=document.getElementById(to);
+        if(el && d[from] !== undefined && d[from] !== '') el.value=d[from];
       });
-      if(d.photos)d.photos.forEach((p,i)=>{if(p&&p.data)photoData[i]=p.data;});
-      if(d.reportText)window._rt=d.reportText;
+      // Photos — load image data AND captions
+      if(d.photos && Array.isArray(d.photos)){
+        d.photos.forEach((p,i)=>{
+          if(p){ 
+            if(p.data)  photoData[i]=p.data;
+            if(p.caption) photoCaptions[i]=p.caption;
+          }
+        });
+      }
+      if(d.reportText) window._rt=d.reportText;
     }
 
     const SECS=['site','unit','findings','damage','rec','summary','photos'];
@@ -497,10 +518,10 @@ function editorPage(report) {
     document.getElementById('sSave').onclick=e=>{e.preventDefault();saveDraft(false);};
     document.getElementById('sPDF').onclick=e=>{e.preventDefault();exportPDF();};
 
+    // Prefill FIRST so photoData and photoCaptions are populated, THEN build the grid
+    if(INIT) prefill(INIT);
     buildPhotos();
-    if(INIT)prefill(INIT);
-    const ss=sessionStorage.getItem('prefill');if(ss){try{prefill(JSON.parse(ss));}catch(e){}sessionStorage.removeItem('prefill');buildPhotos();}
-    if(window._rt)document.getElementById('pdfBtn').style.display='inline-flex';
+    if(window._rt) document.getElementById('pdfBtn').style.display='inline-flex';
     </script>
   `);
 }
@@ -788,4 +809,5 @@ app.listen(PORT,()=>{
   console.log(`\n  Prime Time Report Portal`);
   console.log(`  http://localhost:${PORT}  |  Password: ${PORTAL_PASSWORD}\n`);
 });
+
 
