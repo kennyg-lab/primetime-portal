@@ -1,25 +1,27 @@
-'use strict';
-
-const express     = require('express');
-const session     = require('express-session');
-const multer      = require('multer');
-const fetch       = require('node-fetch');
-const PDFDocument = require('pdfkit');
-const pdfParse    = require('pdf-parse');
-const { PDFDocument: PDFLib } = require('pdf-lib');
-const { v4: uuid }= require('uuid');
-const fs          = require('fs');
-const path        = require('path');
-
-const app  = express();
-const PORT = process.env.PORT || 3000;
-
-const PORTAL_PASSWORD = process.env.PORTAL_PASSWORD || 'primetime2026';
-const ANTHROPIC_KEY   = process.env.ANTHROPIC_API_KEY || '';
-const SESSION_SECRET  = process.env.SESSION_SECRET   || 'pt-secret-change-me';
-
-const ASSETS     = path.join(__dirname, 'assets');
-const HEADER_IMG = path.join(ASSETS, 'pt_header_strip.jpg');
-const FOOTER_IMG = path.join(ASSETS, 'lh_footer.png');
-const DB_FILE    = path.join(__dirname, 'reports.json');
-
+{
+  "name": "primetime-report-portal",
+  "version": "1.0.0",
+  "description": "Prime Time Electricians — Insurance Report Portal",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "nodemon server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "express-session": "^1.17.3",
+    "multer": "^1.4.5-lts.1",
+    "node-fetch": "^2.7.0",
+    "pdfkit": "^0.14.0",
+    "sharp": "^0.33.2",
+    "pdf-parse": "^1.1.1",
+    "uuid": "^9.0.0",
+    "pdf-lib": "^1.17.1"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.2"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
