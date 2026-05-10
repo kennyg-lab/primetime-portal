@@ -409,10 +409,18 @@ function loadPh(e,i){const f=e.target.files[0];if(!f)return;const r=new FileRead
 
 function prefill(d){
   if(!d)return;
+  // Clear all fields and NA states first
   document.querySelectorAll('input[type=text],textarea').forEach(el=>{if(el.id&&el.id!=='__init__')el.value='';});
+  document.querySelectorAll('.fld.na-field').forEach(fld=>{
+    fld.classList.remove('na-field');
+    const btn=fld.querySelector('.na-toggle');if(btn)btn.classList.remove('active');
+  });
+  Object.keys(naState).forEach(k=>delete naState[k]);
   photoData.fill(null);photoCaptions.splice(0,9,...LABELS);
   const MAP={address:'address',inspDate:'inspDate',inspTime:'inspTime',rptDate:'rptDate',insured:'insured',tech:'tech',techSig:'techSig',item:'item',model:'model',age:'age',fault:'fault',cable:'cable',pipe:'pipe',pipeSize:'pipeSize',mount:'mount',ownerDate:'ownerDate',findings:'findTxt',causeS:'causeS',causeD:'causeD',rec:'recTxt',repair:'repTxt',summary:'sumTxt',wearTear:'wearTear'};
   Object.entries(MAP).forEach(([from,to])=>{const el=document.getElementById(to);if(el&&d[from]!==undefined&&d[from]!=='')el.value=d[from];});
+  // Also populate repTxt from rec if repair not set
+  if(d.rec&&!d.repair){const el=document.getElementById('repTxt');if(el&&!el.value)el.value=d.rec;}
   if(d.drainPump){const r=document.querySelector('input[name="dp"][value="'+d.drainPump+'"]');if(r)r.checked=true;}
   if(d.wearTear){const val=d.wearTear.toLowerCase().includes('no')?'No signs observed':'Signs present';const r=document.querySelector('input[name="wt"][value="'+val+'"]');if(r)r.checked=true;}
   if(d.photos&&Array.isArray(d.photos)){d.photos.forEach((p,i)=>{if(p){if(p.data)photoData[i]=p.data;if(p.caption)photoCaptions[i]=p.caption;}});}
@@ -707,8 +715,14 @@ Wear and tear unrelated: ${parsedData.wearTear}
 Property built: ${parsedData.yearBuilt}, Roof: ${parsedData.roofType}
 Owner reported damage: ${parsedData.ownerDate}
 
-Write EXACTLY this JSON with all four fields populated (3-4 sentences each):
-{"findings":"...","causeD":"...","rec":"...","summary":"..."}`;
+Write EXACTLY this JSON with all five fields populated:
+- findings: 3-4 sentences on property and what was found
+- causeD: 3-4 sentences on how damage occurred
+- rec: 1 sentence recommending repair or replacement
+- repair: 1 sentence on what specifically needs to be done
+- summary: 3-4 sentences as standalone executive summary
+
+{"findings":"...","causeD":"...","rec":"...","repair":"...","summary":"..."}`;
 
     const dataRes  = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
@@ -892,3 +906,4 @@ app.listen(PORT,()=>{
   console.log(`\n  Prime Time Report Portal`);
   console.log(`  http://localhost:${PORT}  |  Password: ${PORTAL_PASSWORD}\n`);
 });
+
