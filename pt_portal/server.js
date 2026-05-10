@@ -307,280 +307,210 @@ textarea{resize:vertical;min-height:80px;line-height:1.65}
 .hidden{display:none}
 `;
 
+const EDITOR_FORM = `
+<div class="sec" id="site">
+  <div class="sec-hd"><span class="sec-n">01</span><span class="sec-t">Site & Inspection Details</span></div>
+  <div class="fg one"><div class="fld"><label>Property Address</label><input type="text" id="address" placeholder="e.g. 23 Little St, Karrinyup WA 6018"></div></div><br>
+  <div class="fg">
+    <div class="fld"><label>Inspection Date</label><input type="text" id="inspDate" placeholder="1 May 2026"></div>
+    <div class="fld"><label>Inspection Time</label><input type="text" id="inspTime" placeholder="08:50 AWST"></div>
+    <div class="fld"><label>Report Date</label><input type="text" id="rptDate" placeholder="04/05/2026"></div>
+    <div class="fld"><label>Insured / Person Met</label><input type="text" id="insured" placeholder="Full name"></div>
+    <div class="fld"><label>Attending Technician</label><input type="text" id="tech" placeholder="Tech name"></div>
+    <div class="fld"><label>Tech Signature Date</label><input type="text" id="techSig" placeholder="1 May 2026 08:51 AWST"></div>
+  </div>
+</div>
+<div class="sec" id="unit">
+  <div class="sec-hd"><span class="sec-n">02</span><span class="sec-t">Unit Details</span></div>
+  <div class="fg">
+    <div class="fld" id="fld-item"><div class="fld-hd"><label>Item Inspected</label><button class="na-toggle" onclick="toggleNA('item')">N/A</button></div><input type="text" id="item" placeholder="e.g. Switchboard RCBOs"></div>
+    <div class="fld" id="fld-model"><div class="fld-hd"><label>Make & Model</label><button class="na-toggle" onclick="toggleNA('model')">N/A</button></div><input type="text" id="model" placeholder="e.g. Clipsal"></div>
+    <div class="fld" id="fld-age"><div class="fld-hd"><label>Approximate Age</label><button class="na-toggle" onclick="toggleNA('age')">N/A</button></div><input type="text" id="age" placeholder="e.g. 10 years"></div>
+    <div class="fld" id="fld-fault"><div class="fld-hd"><label>Fault Code</label><button class="na-toggle" onclick="toggleNA('fault')">N/A</button></div><input type="text" id="fault" placeholder="e.g. E3"></div>
+    <div class="fld" id="fld-cable"><div class="fld-hd"><label>Circuit Cable Size</label><button class="na-toggle" onclick="toggleNA('cable')">N/A</button></div><input type="text" id="cable" placeholder="e.g. 2.5mm"></div>
+    <div class="fld" id="fld-pipe"><div class="fld-hd"><label>Pipe Run Length</label><button class="na-toggle" onclick="toggleNA('pipe')">N/A</button></div><input type="text" id="pipe" placeholder="e.g. 5 metres"></div>
+    <div class="fld" id="fld-pipeSize"><div class="fld-hd"><label>Pipe Size</label><button class="na-toggle" onclick="toggleNA('pipeSize')">N/A</button></div><input type="text" id="pipeSize" placeholder="e.g. 1/4 x 1/2"></div>
+    <div class="fld" id="fld-mount"><div class="fld-hd"><label>Outdoor Mounting</label><button class="na-toggle" onclick="toggleNA('mount')">N/A</button></div><input type="text" id="mount" placeholder="e.g. Wall Bracket"></div>
+    <div class="fld" id="fld-ownerDate"><div class="fld-hd"><label>Owner Reported Damage Date</label><button class="na-toggle" onclick="toggleNA('ownerDate')">N/A</button></div><input type="text" id="ownerDate" placeholder="e.g. 17 April 2026"></div>
+    <div class="fld" id="fld-dp"><div class="fld-hd"><label>Drain Pump</label><button class="na-toggle" onclick="toggleNA('dp')">N/A</button></div>
+      <div class="pills"><input type="radio" name="dp" id="dpN" value="No" checked><label for="dpN">No</label><input type="radio" name="dp" id="dpY" value="Yes"><label for="dpY">Yes</label></div></div>
+    <div class="fld" id="fld-wt"><div class="fld-hd"><label>Wear &amp; Tear (unrelated)</label><button class="na-toggle" onclick="toggleNA('wt')">N/A</button></div>
+      <div class="pills"><input type="radio" name="wt" id="wtN" value="No signs observed" checked><label for="wtN">None</label><input type="radio" name="wt" id="wtY" value="Signs present"><label for="wtY">Present</label></div></div>
+    <div class="fld" id="fld-ls"><div class="fld-hd"><label>Refrigerant Leak Signs</label><button class="na-toggle" onclick="toggleNA('ls')">N/A</button></div>
+      <div class="pills"><input type="radio" name="ls" id="lsN" value="No" checked><label for="lsN">No</label><input type="radio" name="ls" id="lsY" value="Yes"><label for="lsY">Yes</label></div></div>
+  </div>
+</div>
+<div class="sec" id="findings">
+  <div class="sec-hd"><span class="sec-n">03</span><span class="sec-t">Inspection Findings</span></div>
+  <div class="fg one"><div class="fld"><label>Findings Narrative</label><textarea id="findTxt" rows="5" placeholder="Describe what was found on site..."></textarea></div></div>
+</div>
+<div class="sec" id="damage">
+  <div class="sec-hd"><span class="sec-n">04</span><span class="sec-t">Cause of Damage</span></div>
+  <div class="fg">
+    <div class="fld" id="fld-causeS"><div class="fld-hd"><label>Cause (Short)</label><button class="na-toggle" onclick="toggleNA('causeS')">N/A</button></div><input type="text" id="causeS" placeholder="e.g. Water ingress"></div>
+    <div class="fld s2" id="fld-causeD"><div class="fld-hd"><label>Detailed Cause</label><button class="na-toggle" onclick="toggleNA('causeD')">N/A</button></div><textarea id="causeD" rows="3" placeholder="Describe in detail..."></textarea></div>
+  </div>
+</div>
+<div class="sec" id="rec">
+  <div class="sec-hd"><span class="sec-n">05</span><span class="sec-t">Repair Recommendation</span></div>
+  <div class="fg one">
+    <div class="fld"><label>Recommendation</label><textarea id="recTxt" rows="3" placeholder="Replacement recommended..."></textarea></div>
+    <div class="fld"><label>Repair Detail</label><textarea id="repTxt" rows="3" placeholder="Replace unit due to..."></textarea></div>
+  </div>
+</div>
+<div class="sec" id="summary">
+  <div class="sec-hd"><span class="sec-n">06</span><span class="sec-t">Summary</span></div>
+  <div class="fg one"><div class="fld"><label>Summary Statement</label><textarea id="sumTxt" rows="4" placeholder="Overall summary..."></textarea></div></div>
+</div>
+<div class="sec" id="photos">
+  <div class="sec-hd"><span class="sec-n">07</span><span class="sec-t">Site Photographs</span></div>
+  <div class="photo-grid" id="photoGrid"></div>
+  <div id="fileInputs"></div>
+</div>
+<div class="rp" id="rp"></div>
+<div class="gen-bar">
+  <button class="btn btn-blk" id="genBtn">&#9889; Generate Report</button>
+  <button class="btn btn-y" id="pdfBtn" style="display:none">&#8595; Export PDF</button>
+  <button class="btn btn-ghost btn-sm" id="saveBtn">Save Draft</button>
+  <span class="st" id="st"></span>
+</div>
+<textarea id="__init__" style="display:none"></textarea>
+`;
+
+const EDITOR_SCRIPT = `
+const LABELS=['Indoor Head Unit','Indoor Unit Name Plate','Outdoor Unit','Outdoor Unit Name Plate','Pipe Run','Controller Screen','Remote Control','Circuit Breaker / RCD','Additional View'];
+const photoData=new Array(9).fill(null);
+const photoCaptions=[...LABELS];
+const naState={};
+
+function toggleNA(id){const fld=document.getElementById('fld-'+id);if(!fld)return;naState[id]=!naState[id];fld.classList.toggle('na-field',naState[id]);const btn=fld.querySelector('.na-toggle');if(btn)btn.classList.toggle('active',naState[id]);}
+
+function buildPhotos(){
+  const grid=document.getElementById('photoGrid'),fi=document.getElementById('fileInputs');
+  grid.innerHTML='';fi.innerHTML='';
+  LABELS.forEach((lbl,i)=>{
+    const inp=document.createElement('input');inp.type='file';inp.accept='image/*';inp.className='hidden';inp.id='fi'+i;inp.onchange=e=>loadPh(e,i);fi.appendChild(inp);
+    const wrap=document.createElement('div');wrap.className='ph-wrap';
+    const slot=document.createElement('div');slot.className='ph-slot';slot.id='slot'+i;slot.onclick=()=>document.getElementById('fi'+i).click();
+    slot.innerHTML='<div class="ph-pl">+</div><div class="ph-n">Photo '+(i+1)+'</div><div class="ph-ov">Change</div>';
+    if(photoData[i]){
+      slot.classList.add('filled');const img=document.createElement('img');img.src=photoData[i];slot.insertBefore(img,slot.firstChild);
+      const del=document.createElement('button');del.textContent='x';del.style.cssText='position:absolute;top:4px;right:4px;background:rgba(0,0,0,0.7);color:#fff;border:none;border-radius:50%;width:22px;height:22px;font-size:11px;cursor:pointer;z-index:10';
+      del.onclick=e=>{e.stopPropagation();photoData[i]=null;photoCaptions[i]=LABELS[i];buildPhotos();};slot.appendChild(del);
+    }
+    const cw=document.createElement('div');cw.className='cap-in';
+    const ci=document.createElement('input');ci.type='text';ci.id='cap'+i;ci.value=photoCaptions[i]||lbl;ci.placeholder=lbl;
+    cw.appendChild(ci);wrap.appendChild(slot);wrap.appendChild(cw);grid.appendChild(wrap);
+  });
+}
+
+function loadPh(e,i){const f=e.target.files[0];if(!f)return;const r=new FileReader();r.onload=ev=>{photoData[i]=ev.target.result;buildPhotos();};r.readAsDataURL(f);}
+
+function prefill(d){
+  if(!d)return;
+  document.querySelectorAll('input[type=text],textarea').forEach(el=>{if(el.id&&el.id!=='__init__')el.value='';});
+  photoData.fill(null);photoCaptions.splice(0,9,...LABELS);
+  const MAP={address:'address',inspDate:'inspDate',inspTime:'inspTime',rptDate:'rptDate',insured:'insured',tech:'tech',techSig:'techSig',item:'item',model:'model',age:'age',fault:'fault',cable:'cable',pipe:'pipe',pipeSize:'pipeSize',mount:'mount',ownerDate:'ownerDate',findings:'findTxt',causeS:'causeS',causeD:'causeD',rec:'recTxt',repair:'repTxt',summary:'sumTxt',wearTear:'wearTear'};
+  Object.entries(MAP).forEach(([from,to])=>{const el=document.getElementById(to);if(el&&d[from]!==undefined&&d[from]!=='')el.value=d[from];});
+  if(d.drainPump){const r=document.querySelector('input[name="dp"][value="'+d.drainPump+'"]');if(r)r.checked=true;}
+  if(d.wearTear){const val=d.wearTear.toLowerCase().includes('no')?'No signs observed':'Signs present';const r=document.querySelector('input[name="wt"][value="'+val+'"]');if(r)r.checked=true;}
+  if(d.photos&&Array.isArray(d.photos)){d.photos.forEach((p,i)=>{if(p){if(p.data)photoData[i]=p.data;if(p.caption)photoCaptions[i]=p.caption;}});}
+  if(d.reportText)window._rt=d.reportText;
+}
+
+const SECS=['site','unit','findings','damage','rec','summary','photos'];
+window.addEventListener('scroll',()=>{let c=SECS[0];SECS.forEach(id=>{const el=document.getElementById(id);if(el&&el.getBoundingClientRect().top<110)c=id;});document.querySelectorAll('.nav-a').forEach(a=>a.classList.toggle('on',a.getAttribute('href')==='#'+c));},{passive:true});
+
+const g=id=>{const el=document.getElementById(id);if(!el)return'';const fld=el.closest('.fld');if(fld&&fld.classList.contains('na-field'))return'N/A';return el.value?.trim()||'';};
+const radio=n=>{const c=document.querySelector('input[name="'+n+'"]:checked');if(!c)return'';const fld=c.closest('.fld');if(fld&&fld.classList.contains('na-field'))return'N/A';return c.value;};
+function collect(){return{address:g('address'),inspDate:g('inspDate'),inspTime:g('inspTime'),rptDate:g('rptDate'),insured:g('insured'),tech:g('tech'),techSig:g('techSig'),item:g('item'),model:g('model'),age:g('age'),fault:g('fault'),cable:g('cable'),pipe:g('pipe'),pipeSize:g('pipeSize'),mount:g('mount'),ownerDate:g('ownerDate'),drainPump:radio('dp'),wearTear:radio('wt'),leakSigns:radio('ls'),findings:g('findTxt'),causeS:g('causeS'),causeD:g('causeD'),rec:g('recTxt'),repair:g('repTxt'),summary:g('sumTxt'),photos:photoData.map((d,i)=>({data:d,caption:document.getElementById('cap'+i)?.value||LABELS[i]}))};};
+
+async function generate(){
+  const d=collect(),btn=document.getElementById('genBtn'),st=document.getElementById('st'),rp=document.getElementById('rp'),pdfBtn=document.getElementById('pdfBtn');
+  btn.classList.add('busy');btn.textContent='Generating...';st.className='st on';st.textContent='Claude is writing...';rp.className='rp';pdfBtn.style.display='none';window._rt='';
+  try{
+    const res=await fetch('/api/generate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(d)});
+    const json=await res.json();if(!json.ok)throw new Error(json.error);
+    window._rt=json.text;st.className='st on ok';st.textContent='Report ready - review then export PDF';
+    rp.innerHTML=json.text.replace(/^## \\d+\\.\\s*(.+)$/gm,'<h2>$1</h2>').replace(/^## (.+)$/gm,'<h2>$1</h2>').replace(/\\*\\*(.+?)\\*\\*/g,'<strong>$1</strong>').split('\\n\\n').map(b=>b.startsWith('<')?b:'<p>'+b.replace(/\\n/g,' ')+'</p>').join('');
+    rp.className='rp show';pdfBtn.style.display='inline-flex';
+    saveDraft(true);
+  }catch(e){st.className='st on err';st.textContent='Error: '+e.message;}
+  btn.classList.remove('busy');btn.textContent='Generate Report';
+}
+
+async function saveDraft(silent=false){
+  const d=collect();d.reportText=window._rt||'';
+  const url=EDIT_ID?'/api/report/'+EDIT_ID:'/api/report';
+  await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(d)});
+  if(!silent){const st=document.getElementById('st');st.className='st on ok';st.textContent='Saved';setTimeout(()=>st.className='st',2000);}
+}
+
+async function exportPDF(){
+  if(!window._rt){alert('Generate the report first.');return;}
+  const d=collect(),btn=document.getElementById('pdfBtn'),st=document.getElementById('st');
+  btn.classList.add('busy');btn.textContent='Building PDF...';st.className='st on';st.textContent='Creating PDF...';
+  try{
+    const res=await fetch('/api/pdf',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({reportText:window._rt,photos:d.photos,address:d.address})});
+    if(!res.ok){const e=await res.json();throw new Error(e.error);}
+    const blob=await res.blob(),url=URL.createObjectURL(blob),a=document.createElement('a');
+    a.href=url;a.download='Insurance_Report_'+(d.address||'Report').replace(/[^a-zA-Z0-9]+/g,'_')+'.pdf';a.click();URL.revokeObjectURL(url);
+    st.className='st on ok';st.textContent='PDF downloaded';
+  }catch(e){st.className='st on err';st.textContent='Error: '+e.message;}
+  btn.classList.remove('busy');btn.textContent='Export PDF';
+}
+
+document.getElementById('genBtn').onclick=generate;
+document.getElementById('pdfBtn').onclick=exportPDF;
+document.getElementById('saveBtn').onclick=()=>saveDraft(false);
+document.getElementById('sGen').onclick=e=>{e.preventDefault();generate();};
+document.getElementById('sSave').onclick=e=>{e.preventDefault();saveDraft(false);};
+document.getElementById('sPDF').onclick=e=>{e.preventDefault();exportPDF();};
+
+(async()=>{
+  if(EDIT_ID){
+    try{const r=await fetch('/api/report/'+EDIT_ID);INIT=await r.json();}
+    catch(e){console.error('Load failed',e);}
+  }
+  if(INIT)prefill(INIT);
+  buildPhotos();
+  if(window._rt)document.getElementById('pdfBtn').style.display='inline-flex';
+})();
+`;
+
 function editorPage(report) {
-  const editId = report ? `'${report.id}'` : 'null';
-  const prefillJSON = report ? JSON.stringify(report) : 'null';
+  const reportId    = report ? report.id : '';
+  const reportAddr  = report ? (report.address||'Report') : 'New Report';
+  const pageTitle   = report ? 'Edit Report' : 'New Report';
+  const navActive   = report ? 'dash' : 'new';
+  const titleText   = report ? 'Edit — ' + reportAddr : 'New Report';
+  const safeJSON    = Buffer.from(report ? JSON.stringify(report) : 'null').toString('base64');
 
-  return shell(report ? 'Edit Report' : 'New Report', report ? 'dash' : 'new', `
-    <style>${EDITOR_CSS}</style>
-    <div class="page-hd">
-      <div class="page-title">${report ? 'Edit — ' + (report.address||'Report') : 'New Report'}</div>
-      <a href="/" class="btn btn-ghost btn-sm">← Dashboard</a>
-    </div>
-    <div class="layout2">
-      <nav class="sidebar">
-        <div class="nav-grp">Sections</div>
-        <a class="nav-a on" href="#site"><div class="dot"></div>Site Details</a>
-        <a class="nav-a" href="#unit"><div class="dot"></div>Unit Details</a>
-        <a class="nav-a" href="#findings"><div class="dot"></div>Findings</a>
-        <a class="nav-a" href="#damage"><div class="dot"></div>Cause of Damage</a>
-        <a class="nav-a" href="#rec"><div class="dot"></div>Recommendation</a>
-        <a class="nav-a" href="#summary"><div class="dot"></div>Summary</a>
-        <a class="nav-a" href="#photos"><div class="dot"></div>Photos</a>
-        <div class="nav-grp" style="margin-top:12px">Actions</div>
-        <a class="nav-a" href="#" id="sGen"><div class="dot"></div>Generate</a>
-        <a class="nav-a" href="#" id="sSave"><div class="dot"></div>Save Draft</a>
-        <a class="nav-a" href="#" id="sPDF"><div class="dot"></div>Export PDF</a>
-      </nav>
-      <div class="editor">
-
-        <div class="sec" id="site">
-          <div class="sec-hd"><span class="sec-n">01</span><span class="sec-t">Site & Inspection Details</span></div>
-          <div class="fg one"><div class="fld"><label>Property Address</label><input type="text" id="address" placeholder="e.g. 23 Little St, Karrinyup WA 6018"></div></div><br>
-          <div class="fg">
-            <div class="fld"><label>Inspection Date</label><input type="text" id="inspDate" placeholder="1 May 2026"></div>
-            <div class="fld"><label>Inspection Time</label><input type="text" id="inspTime" placeholder="08:50 AWST"></div>
-            <div class="fld"><label>Report Date</label><input type="text" id="rptDate" placeholder="04/05/2026"></div>
-            <div class="fld"><label>Insured / Person Met</label><input type="text" id="insured" placeholder="Full name"></div>
-            <div class="fld"><label>Attending Technician</label><input type="text" id="tech" placeholder="Tech name"></div>
-            <div class="fld"><label>Tech Signature Date</label><input type="text" id="techSig" placeholder="1 May 2026 08:51 AWST"></div>
-          </div>
-        </div>
-
-        <div class="sec" id="unit">
-          <div class="sec-hd"><span class="sec-n">02</span><span class="sec-t">Unit Details</span></div>
-          <div class="fg">
-            <div class="fld" id="fld-item"><div class="fld-hd"><label>Item Inspected</label><button class="na-toggle" onclick="toggleNA('item')">N/A</button></div><input type="text" id="item" placeholder="e.g. Split System Air Conditioner"></div>
-            <div class="fld" id="fld-model"><div class="fld-hd"><label>Make & Model</label><button class="na-toggle" onclick="toggleNA('model')">N/A</button></div><input type="text" id="model" placeholder="e.g. Daikin FTXM25"></div>
-            <div class="fld" id="fld-age"><div class="fld-hd"><label>Approximate Age</label><button class="na-toggle" onclick="toggleNA('age')">N/A</button></div><input type="text" id="age" placeholder="e.g. 5 years"></div>
-            <div class="fld" id="fld-fault"><div class="fld-hd"><label>Fault Code</label><button class="na-toggle" onclick="toggleNA('fault')">N/A</button></div><input type="text" id="fault" placeholder="e.g. E3"></div>
-            <div class="fld" id="fld-cable"><div class="fld-hd"><label>Circuit Cable Size</label><button class="na-toggle" onclick="toggleNA('cable')">N/A</button></div><input type="text" id="cable" placeholder="e.g. 2.5mm"></div>
-            <div class="fld" id="fld-pipe"><div class="fld-hd"><label>Pipe Run Length</label><button class="na-toggle" onclick="toggleNA('pipe')">N/A</button></div><input type="text" id="pipe" placeholder="e.g. 5 metres"></div>
-            <div class="fld" id="fld-pipeSize"><div class="fld-hd"><label>Pipe Size</label><button class="na-toggle" onclick="toggleNA('pipeSize')">N/A</button></div><input type="text" id="pipeSize" placeholder="e.g. 1/4 x 1/2"></div>
-            <div class="fld" id="fld-mount"><div class="fld-hd"><label>Outdoor Mounting</label><button class="na-toggle" onclick="toggleNA('mount')">N/A</button></div><input type="text" id="mount" placeholder="e.g. Wall Bracket"></div>
-            <div class="fld" id="fld-ownerDate"><div class="fld-hd"><label>Owner Reported Damage Date</label><button class="na-toggle" onclick="toggleNA('ownerDate')">N/A</button></div><input type="text" id="ownerDate" placeholder="e.g. 17 April 2026"></div>
-            <div class="fld" id="fld-dp"><div class="fld-hd"><label>Drain Pump</label><button class="na-toggle" onclick="toggleNA('dp')">N/A</button></div>
-              <div class="pills"><input type="radio" name="dp" id="dpN" value="No" checked><label for="dpN">No</label><input type="radio" name="dp" id="dpY" value="Yes"><label for="dpY">Yes</label></div></div>
-            <div class="fld" id="fld-wt"><div class="fld-hd"><label>Wear & Tear (unrelated)</label><button class="na-toggle" onclick="toggleNA('wt')">N/A</button></div>
-              <div class="pills"><input type="radio" name="wt" id="wtN" value="No signs observed" checked><label for="wtN">None</label><input type="radio" name="wt" id="wtY" value="Signs present"><label for="wtY">Present</label></div></div>
-            <div class="fld" id="fld-ls"><div class="fld-hd"><label>Refrigerant Leak Signs</label><button class="na-toggle" onclick="toggleNA('ls')">N/A</button></div>
-              <div class="pills"><input type="radio" name="ls" id="lsN" value="No" checked><label for="lsN">No</label><input type="radio" name="ls" id="lsY" value="Yes"><label for="lsY">Yes</label></div></div>
-          </div>
-        </div>
-
-        <div class="sec" id="findings">
-          <div class="sec-hd"><span class="sec-n">03</span><span class="sec-t">Inspection Findings</span></div>
-          <div class="fg one"><div class="fld"><label>Findings Narrative</label><textarea id="findTxt" rows="5" placeholder="Describe what was found on site..."></textarea></div></div>
-        </div>
-
-        <div class="sec" id="damage">
-          <div class="sec-hd"><span class="sec-n">04</span><span class="sec-t">Cause of Damage</span></div>
-          <div class="fg">
-            <div class="fld" id="fld-causeS"><div class="fld-hd"><label>Cause (Short)</label><button class="na-toggle" onclick="toggleNA('causeS')">N/A</button></div><input type="text" id="causeS" placeholder="e.g. Water ingress"></div>
-            <div class="fld s2" id="fld-causeD"><div class="fld-hd"><label>Detailed Cause</label><button class="na-toggle" onclick="toggleNA('causeD')">N/A</button></div><textarea id="causeD" rows="3" placeholder="Describe in detail..."></textarea></div>
-          </div>
-        </div>
-
-        <div class="sec" id="rec">
-          <div class="sec-hd"><span class="sec-n">05</span><span class="sec-t">Repair Recommendation</span></div>
-          <div class="fg one">
-            <div class="fld"><label>Recommendation</label><textarea id="recTxt" rows="3" placeholder="Replacement recommended..."></textarea></div>
-            <div class="fld"><label>Repair Detail</label><textarea id="repTxt" rows="3" placeholder="Replace unit due to..."></textarea></div>
-          </div>
-        </div>
-
-        <div class="sec" id="summary">
-          <div class="sec-hd"><span class="sec-n">06</span><span class="sec-t">Summary</span></div>
-          <div class="fg one"><div class="fld"><label>Summary Statement</label><textarea id="sumTxt" rows="4" placeholder="Overall summary..."></textarea></div></div>
-        </div>
-
-        <div class="sec" id="photos">
-          <div class="sec-hd"><span class="sec-n">07</span><span class="sec-t">Site Photographs</span></div>
-          <div class="photo-grid" id="photoGrid"></div>
-          <div id="fileInputs"></div>
-        </div>
-
-        <div class="rp" id="rp"></div>
-
-        <div class="gen-bar">
-          <button class="btn btn-blk" id="genBtn">⚡ Generate Report</button>
-          <button class="btn btn-y" id="pdfBtn" style="display:none">↓ Export PDF</button>
-          <button class="btn btn-ghost btn-sm" id="saveBtn">Save Draft</button>
-          <span class="st" id="st"></span>
-        </div>
-      </div>
-    </div>
-
-    <script>
-    const EDIT_ID=${editId};
-    const INIT=${prefillJSON};
-    const LABELS=['Indoor Head Unit','Indoor Unit Name Plate','Outdoor Unit','Outdoor Unit Name Plate','Pipe Run','Controller Screen','Remote Control','Circuit Breaker / RCD','Additional View'];
-    const photoData=new Array(9).fill(null);
-    const photoCaptions=[...LABELS]; // starts with defaults, overwritten by prefill
-    const naState={};
-
-    function toggleNA(id){
-      const fld=document.getElementById('fld-'+id); if(!fld)return;
-      naState[id]=!naState[id];
-      fld.classList.toggle('na-field',naState[id]);
-      const btn=fld.querySelector('.na-toggle'); if(btn)btn.classList.toggle('active',naState[id]);
-    }
-
-    function buildPhotos(){
-      const grid=document.getElementById('photoGrid'),fi=document.getElementById('fileInputs');
-      grid.innerHTML='';fi.innerHTML='';
-      LABELS.forEach((lbl,i)=>{
-        const inp=document.createElement('input');inp.type='file';inp.accept='image/*';inp.className='hidden';inp.id='fi'+i;
-        inp.onchange=e=>loadPh(e,i);fi.appendChild(inp);
-        const wrap=document.createElement('div');wrap.className='ph-wrap';
-        const slot=document.createElement('div');slot.className='ph-slot';slot.id='slot'+i;
-        slot.onclick=()=>document.getElementById('fi'+i).click();
-        slot.innerHTML='<div class="ph-pl">+</div><div class="ph-n">Photo '+(i+1)+'</div><div class="ph-ov">Change</div>';
-        if(photoData[i]){
-          slot.classList.add('filled');
-          const img=document.createElement('img');img.src=photoData[i];slot.insertBefore(img,slot.firstChild);
-          // Delete button
-          const del=document.createElement('button');
-          del.textContent='✕';
-          del.style.cssText='position:absolute;top:4px;right:4px;background:rgba(0,0,0,0.7);color:#fff;border:none;border-radius:50%;width:22px;height:22px;font-size:11px;cursor:pointer;z-index:10;display:flex;align-items:center;justify-content:center;line-height:1';
-          del.onclick=e=>{e.stopPropagation();deletePh(i);};
-          slot.appendChild(del);
-        }
-        const cw=document.createElement('div');cw.className='cap-in';
-        const ci=document.createElement('input');ci.type='text';ci.id='cap'+i;
-        ci.value=photoCaptions[i]||lbl;ci.placeholder=lbl;
-        cw.appendChild(ci);wrap.appendChild(slot);wrap.appendChild(cw);grid.appendChild(wrap);
-      });
-    }
-
-    function deletePh(i){
-      photoData[i]=null;
-      photoCaptions[i]=LABELS[i];
-      buildPhotos();
-    }
-
-    function loadPh(e,i){
-      const f=e.target.files[0];if(!f)return;
-      const r=new FileReader();r.onload=ev=>{
-        photoData[i]=ev.target.result;
-        const s=document.getElementById('slot'+i);
-        s.classList.add('filled');
-        const o=s.querySelector('img');if(o)o.remove();
-        const img=document.createElement('img');img.src=ev.target.result;s.insertBefore(img,s.firstChild);
-        // Add delete button
-        const old=s.querySelector('button');if(old)old.remove();
-        const del=document.createElement('button');
-        del.textContent='✕';
-        del.style.cssText='position:absolute;top:4px;right:4px;background:rgba(0,0,0,0.7);color:#fff;border:none;border-radius:50%;width:22px;height:22px;font-size:11px;cursor:pointer;z-index:10;display:flex;align-items:center;justify-content:center;line-height:1';
-        del.onclick=e=>{e.stopPropagation();deletePh(i);};
-        s.appendChild(del);
-      };r.readAsDataURL(f);
-    }
-
-    function prefill(d){
-      if(!d)return;
-      // Clear ALL fields first — fresh slate for every new report
-      document.querySelectorAll('input[type=text],textarea').forEach(el=>{ el.value=''; });
-      photoData.fill(null);
-      photoCaptions.splice(0,9,...LABELS);
-
-      // Map server field names → form input ids
-      const MAP={
-        address:'address', inspDate:'inspDate', inspTime:'inspTime', rptDate:'rptDate',
-        insured:'insured', tech:'tech', techSig:'techSig',
-        item:'item', model:'model', age:'age', fault:'fault',
-        cable:'cable', pipe:'pipe', pipeSize:'pipeSize', mount:'mount',
-        ownerDate:'ownerDate',
-        findings:'findTxt', causeS:'causeS', causeD:'causeD',
-        rec:'recTxt', repair:'repTxt', summary:'sumTxt',
-        wearTear:'wearTear'
-      };
-      Object.entries(MAP).forEach(([from,to])=>{
-        const el=document.getElementById(to);
-        if(el && d[from] !== undefined && d[from] !== '') el.value=d[from];
-      });
-      // Set radio buttons from prefill data
-      if(d.drainPump){
-        const r=document.querySelector(`input[name="dp"][value="${d.drainPump}"]`);
-        if(r) r.checked=true;
-      }
-      if(d.wearTear){
-        const val = d.wearTear.toLowerCase().includes('no') ? 'No signs observed' : 'Signs present';
-        const r=document.querySelector(`input[name="wt"][value="${val}"]`);
-        if(r) r.checked=true;
-      }
-      if(d.leakSigns){
-        const r=document.querySelector(`input[name="ls"][value="${d.leakSigns}"]`);
-        if(r) r.checked=true;
-      }
-      // Photos — load image data AND captions
-      if(d.photos && Array.isArray(d.photos)){
-        d.photos.forEach((p,i)=>{
-          if(p){
-            if(p.data)    photoData[i]=p.data;
-            if(p.caption) photoCaptions[i]=p.caption;
-          }
-        });
-      }
-      if(d.reportText) window._rt=d.reportText;
-    }
-
-    const SECS=['site','unit','findings','damage','rec','summary','photos'];
-    window.addEventListener('scroll',()=>{let c=SECS[0];SECS.forEach(id=>{const el=document.getElementById(id);if(el&&el.getBoundingClientRect().top<110)c=id;});document.querySelectorAll('.nav-a').forEach(a=>a.classList.toggle('on',a.getAttribute('href')==='#'+c));},{passive:true});
-
-    const g=id=>{const el=document.getElementById(id);if(!el)return'';const fld=el.closest('.fld');if(fld&&fld.classList.contains('na-field'))return'N/A';return el.value?.trim()||'';};
-    const radio=n=>{const c=document.querySelector('input[name="'+n+'"]:checked');if(!c)return'';const fld=c.closest('.fld');if(fld&&fld.classList.contains('na-field'))return'N/A';return c.value;};
-
-    function collect(){return{address:g('address'),inspDate:g('inspDate'),inspTime:g('inspTime'),rptDate:g('rptDate'),insured:g('insured'),tech:g('tech'),techSig:g('techSig'),item:g('item'),model:g('model'),age:g('age'),fault:g('fault'),cable:g('cable'),pipe:g('pipe'),pipeSize:g('pipeSize'),mount:g('mount'),ownerDate:g('ownerDate'),drainPump:radio('dp'),wearTear:radio('wt'),leakSigns:radio('ls'),findings:g('findTxt'),causeS:g('causeS'),causeD:g('causeD'),rec:g('recTxt'),repair:g('repTxt'),summary:g('sumTxt'),photos:photoData.map((d,i)=>({data:d,caption:document.getElementById('cap'+i)?.value||LABELS[i]}))};};
-
-    async function generate(){
-      const d=collect(),btn=document.getElementById('genBtn'),st=document.getElementById('st'),rp=document.getElementById('rp'),pdfBtn=document.getElementById('pdfBtn');
-      btn.classList.add('busy');btn.textContent='⏳ Generating...';st.className='st on';st.textContent='Claude is writing...';rp.className='rp';pdfBtn.style.display='none';window._rt='';
-      try{
-        const res=await fetch('/api/generate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(d)});
-        const json=await res.json();if(!json.ok)throw new Error(json.error);
-        window._rt=json.text;st.className='st on ok';st.textContent='✓ Report ready — review then export PDF';
-        rp.innerHTML=json.text.replace(/^## \\d+\\.\\s*(.+)$/gm,'<h2>$1</h2>').replace(/^## (.+)$/gm,'<h2>$1</h2>').replace(/\\*\\*(.+?)\\*\\*/g,'<strong>$1</strong>').split('\\n\\n').map(b=>b.startsWith('<')?b:'<p>'+b.replace(/\\n/g,' ')+'</p>').join('');
-        rp.className='rp show';pdfBtn.style.display='inline-flex';
-        saveDraft(true);
-      }catch(e){st.className='st on err';st.textContent='✗ '+e.message;}
-      btn.classList.remove('busy');btn.textContent='⚡ Generate Report';
-    }
-
-    async function saveDraft(silent=false){
-      const d=collect();d.reportText=window._rt||'';
-      const url=EDIT_ID?'/api/report/'+EDIT_ID:'/api/report';
-      await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(d)});
-      if(!silent){const st=document.getElementById('st');st.className='st on ok';st.textContent='✓ Saved';setTimeout(()=>st.className='st',2000);}
-    }
-
-    async function exportPDF(){
-      if(!window._rt){alert('Generate the report first.');return;}
-      const d=collect(),btn=document.getElementById('pdfBtn'),st=document.getElementById('st');
-      btn.classList.add('busy');btn.textContent='⏳ Building PDF...';st.className='st on';st.textContent='Creating PDF...';
-      try{
-        const res=await fetch('/api/pdf',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({reportText:window._rt,photos:d.photos,address:d.address})});
-        if(!res.ok){const e=await res.json();throw new Error(e.error);}
-        const blob=await res.blob(),url=URL.createObjectURL(blob),a=document.createElement('a');
-        a.href=url;a.download='Insurance_Report_'+(d.address||'Report').replace(/[^a-zA-Z0-9]+/g,'_')+'.pdf';a.click();URL.revokeObjectURL(url);
-        st.className='st on ok';st.textContent='✓ PDF downloaded';
-      }catch(e){st.className='st on err';st.textContent='✗ '+e.message;}
-      btn.classList.remove('busy');btn.textContent='↓ Export PDF';
-    }
-
-    document.getElementById('genBtn').onclick=generate;
-    document.getElementById('pdfBtn').onclick=exportPDF;
-    document.getElementById('saveBtn').onclick=()=>saveDraft(false);
-    document.getElementById('sGen').onclick=e=>{e.preventDefault();generate();};
-    document.getElementById('sSave').onclick=e=>{e.preventDefault();saveDraft(false);};
-    document.getElementById('sPDF').onclick=e=>{e.preventDefault();exportPDF();};
-
-    // Prefill FIRST so photoData and photoCaptions are populated, THEN build the grid
-    if(INIT) prefill(INIT);
-    buildPhotos();
-    if(window._rt) document.getElementById('pdfBtn').style.display='inline-flex';
-    </script>
-  `);
+  return shell(pageTitle, navActive,
+    '<style>' + EDITOR_CSS + '</style>' +
+    '<div class="page-hd">' +
+    '<div class="page-title">' + titleText + '</div>' +
+    '<a href="/" class="btn btn-ghost btn-sm">\u2190 Dashboard</a>' +
+    '</div>' +
+    '<div class="layout2">' +
+    '<nav class="sidebar">' +
+    '<div class="nav-grp">Sections</div>' +
+    '<a class="nav-a on" href="#site"><div class="dot"></div>Site Details</a>' +
+    '<a class="nav-a" href="#unit"><div class="dot"></div>Unit Details</a>' +
+    '<a class="nav-a" href="#findings"><div class="dot"></div>Findings</a>' +
+    '<a class="nav-a" href="#damage"><div class="dot"></div>Cause of Damage</a>' +
+    '<a class="nav-a" href="#rec"><div class="dot"></div>Recommendation</a>' +
+    '<a class="nav-a" href="#summary"><div class="dot"></div>Summary</a>' +
+    '<a class="nav-a" href="#photos"><div class="dot"></div>Photos</a>' +
+    '<div class="nav-grp" style="margin-top:12px">Actions</div>' +
+    '<a class="nav-a" href="#" id="sGen"><div class="dot"></div>Generate</a>' +
+    '<a class="nav-a" href="#" id="sSave"><div class="dot"></div>Save Draft</a>' +
+    '<a class="nav-a" href="#" id="sPDF"><div class="dot"></div>Export PDF</a>' +
+    '</nav>' +
+    '<div class="editor">' + EDITOR_FORM + '</div>' +
+    '</div>' +
+    '<script>const EDIT_ID="' + reportId + '";let INIT=null;' + EDITOR_SCRIPT + '<\/script>'
+  );
 }
 
 app.get('/new',      requireAuth, (req, res) => res.send(editorPage(null)));
@@ -870,6 +800,13 @@ Sections (skip if no info): ## 1. Site & Inspection Details  ## 2. Item Inspecte
 });
 
 // ── API: Save / Update / Delete report ───────────────────────────────────────
+app.get('/api/report/:id', requireAuth, (req, res) => {
+  const db = readDB();
+  const r = db.reports.find(r => r.id === req.params.id);
+  if (!r) return res.status(404).json(null);
+  res.json(r);
+});
+
 app.post('/api/report', requireAuth, (req, res) => {
   const db = readDB();
   const r = { id:uuid(), createdAt:new Date().toISOString(), status:'pending', ...req.body };
