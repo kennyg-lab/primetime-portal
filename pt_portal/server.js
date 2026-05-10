@@ -21,15 +21,16 @@ const SESSION_SECRET  = process.env.SESSION_SECRET   || 'pt-secret-change-me';
 const ASSETS     = path.join(__dirname, 'assets');
 const HEADER_IMG = path.join(ASSETS, 'pt_header_strip.jpg');
 const FOOTER_IMG = path.join(ASSETS, 'lh_footer.png');
-const DB_FILE    = path.join(__dirname, 'reports.json');
+const DB_FILE    = '/tmp/reports.json';
 
-// ── Database ──────────────────────────────────────────────────────────────────
+// ── Database — /tmp persists within Railway session ──────────────────────────
 function readDB() {
   try { return JSON.parse(fs.readFileSync(DB_FILE, 'utf8')); }
   catch { return { reports: [] }; }
 }
 function writeDB(data) {
-  fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2));
+  try { fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2)); }
+  catch(e) { console.error('DB write error:', e.message); }
 }
 
 // ── Middleware ────────────────────────────────────────────────────────────────
@@ -684,89 +685,50 @@ Example: ["Indoor head unit on wall", "Outdoor condenser wall mounted", "Electri
       pipeSize:  getNext('Pipe size'),
       mount:     getNext('How is the outdoor unit mounted'),
       drainPump: getNext('Is there a drain pump?'),
-    };    // Now ask Claude to write ALL narrative fields from the full report text
-    const dataPrompt = `You are a senior electrical inspector writing a professional insurance inspection report for Prime Time Electricians.
+    };
 
-Read the structured data and write a complete professional narrative. Return ONLY valid JSON — no markdown, no comments.
+    // Now ask Claude to write the narrative fields only
+    const dataPrompt = `You are writing an insurance inspection report for Prime Time Electricians.
+Based on the job data below, write professional formal prose for the four narrative fields.
+Return ONLY a valid JSON object with exactly these four keys. No markdown, no extra text.
 
-Structured data extracted from iAudit report:
-- Address: ${parsedData.address}
-- Date: ${parsedData.inspDate} ${parsedData.inspTime}
-- Insured: ${parsedData.insured}
-- Technician: ${parsedData.tech}
-- Item inspected: ${parsedData.item}
-- Make/Model: ${parsedData.model}
-- Age: ${parsedData.age}
-- Fault code: ${parsedData.fault || 'None'}
-- Cable size: ${parsedData.cable}
-- Voltage reading: ${parsedData.voltage || 'Not recorded'}
-- Cutout measurements: ${parsedData.cutout || 'Not recorded'}
-- Owner reported date: ${parsedData.ownerDate}
-- Cause of damage: ${parsedData.causeS}
-- Wear & tear unrelated: ${parsedData.wearTear}
-- Property year built: ${parsedData.yearBuilt}
-- Roof type: ${parsedData.roofType}
+JOB DATA:
+Property: ${parsedData.address}
+Inspected: ${parsedData.inspDate} at ${parsedData.inspTime}
+Insured: ${parsedData.insured}
+Technician: ${parsedData.tech}
+Item: ${parsedData.item} (${parsedData.model}, approx ${parsedData.age})
+Fault code: ${parsedData.fault || 'None'}
+Cable size: ${parsedData.cable}
+Voltage: ${parsedData.voltage || 'Not recorded'}
+Cutout: ${parsedData.cutout || 'Not recorded'}
+Cause of damage: ${parsedData.causeS}
+Wear and tear unrelated: ${parsedData.wearTear}
+Property built: ${parsedData.yearBuilt}, Roof: ${parsedData.roofType}
+Owner reported damage: ${parsedData.ownerDate}
 
-Write these narrative fields — be specific, mention the actual item, brand, measurements and property details:
-- "findings": 3-4 sentences — describe the property, what was inspected, condition found, readings taken
-- "causeD": 3-4 sentences — explain exactly how the damage occurred, what components were affected, why it needs attention
-- "rec": 1-2 sentences — clear recommendation, repair or full replacement and why
-- "summary": 3-4 sentences — standalone executive summary covering property, item, cause and outcome
-
-Return this exact JSON:
-{
-  "address": "${parsedData.address}",
-  "inspDate": "${parsedData.inspDate}",
-  "inspTime": "${parsedData.inspTime}",
-  "rptDate": "${parsedData.rptDate}",
-  "insured": "${parsedData.insured}",
-  "tech": "${parsedData.tech}",
-  "item": "${parsedData.item}",
-  "model": "${parsedData.model}",
-  "age": "${parsedData.age}",
-  "fault": "${parsedData.fault}",
-  "cable": "${parsedData.cable}",
-  "pipe": "${parsedData.pipe}",
-  "pipeSize": "${parsedData.pipeSize}",
-  "mount": "${parsedData.mount}",
-  "ownerDate": "${parsedData.ownerDate}",
-  "drainPump": "${parsedData.drainPump}",
-  "wearTear": "${parsedData.wearTear}",
-  "causeS": "${parsedData.causeS}",
-  "findings": "WRITE HERE",
-  "causeD": "WRITE HERE",
-  "rec": "WRITE HERE",
-  "summary": "WRITE HERE"
-}`;
+Write EXACTLY this JSON with all four fields populated (3-4 sentences each):
+{"findings":"...","causeD":"...","rec":"...","summary":"..."}`;
 
     const dataRes  = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: { 'Content-Type':'application/json', 'x-api-key':ANTHROPIC_KEY, 'anthropic-version':'2023-06-01' },
-      body: JSON.stringify({ model:'claude-sonnet-4-20250514', max_tokens:2000, messages:[{role:'user',content:dataPrompt}] })
+      body: JSON.stringify({ model:'claude-sonnet-4-20250514', max_tokens:1200, messages:[{role:'user',content:dataPrompt}] })
     });
     const dataJson = await dataRes.json();
     const dataRaw  = dataJson.content?.[0]?.text || '{}';
-    console.log('Claude raw response (first 500):', dataRaw.substring(0, 500));
+    console.log('Claude narrative response:', dataRaw.substring(0, 300));
 
-    let data = {};
+    let narrative = {};
     try {
-      // Strip markdown fences and find JSON object
       const jsonMatch = dataRaw.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        data = JSON.parse(jsonMatch[0]);
-      } else {
-        data = JSON.parse(dataRaw.replace(/```json|```/g,'').trim());
-      }
-    } catch(parseErr) {
-      console.error('JSON parse failed:', parseErr.message);
-      // Use parsedData as fallback so at least structured fields are saved
-      data = parsedData;
+      narrative = jsonMatch ? JSON.parse(jsonMatch[0]) : {};
+    } catch(e) {
+      console.error('Narrative parse failed:', e.message);
     }
 
-    // Merge parsedData into data so structured fields always win if Claude missed them
-    Object.keys(parsedData).forEach(k => {
-      if (!data[k] && parsedData[k]) data[k] = parsedData[k];
-    });
+    // Combine: parsedData has all structured fields, narrative has the written fields
+    const data = { ...parsedData, ...narrative };
 
     // ── 5. Create pending report in DB ────────────────────────────────────────
     const db = readDB();
@@ -780,6 +742,10 @@ Return this exact JSON:
     };
     db.reports.push(newReport);
     writeDB(db);
+
+    // Store in session so editor can load it even if DB resets
+    req.session.lastReport = newReport;
+    req.session.save();
 
     res.json({ ok: true, reportId: newReport.id, photosFound: labelledPhotos.length });
 
@@ -822,7 +788,11 @@ Sections (skip if no info): ## 1. Site & Inspection Details  ## 2. Item Inspecte
 // ── API: Save / Update / Delete report ───────────────────────────────────────
 app.get('/api/report/:id', requireAuth, (req, res) => {
   const db = readDB();
-  const r = db.reports.find(r => r.id === req.params.id);
+  let r = db.reports.find(r => r.id === req.params.id);
+  // Fallback to session if DB was reset (Railway ephemeral filesystem)
+  if (!r && req.session.lastReport && req.session.lastReport.id === req.params.id) {
+    r = req.session.lastReport;
+  }
   if (!r) return res.status(404).json(null);
   res.json(r);
 });
@@ -922,5 +892,3 @@ app.listen(PORT,()=>{
   console.log(`\n  Prime Time Report Portal`);
   console.log(`  http://localhost:${PORT}  |  Password: ${PORTAL_PASSWORD}\n`);
 });
-
-
