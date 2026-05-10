@@ -746,7 +746,27 @@ Return this exact JSON:
     });
     const dataJson = await dataRes.json();
     const dataRaw  = dataJson.content?.[0]?.text || '{}';
-    const data     = JSON.parse(dataRaw.replace(/```json|```/g,'').trim());
+    console.log('Claude raw response (first 500):', dataRaw.substring(0, 500));
+
+    let data = {};
+    try {
+      // Strip markdown fences and find JSON object
+      const jsonMatch = dataRaw.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        data = JSON.parse(jsonMatch[0]);
+      } else {
+        data = JSON.parse(dataRaw.replace(/```json|```/g,'').trim());
+      }
+    } catch(parseErr) {
+      console.error('JSON parse failed:', parseErr.message);
+      // Use parsedData as fallback so at least structured fields are saved
+      data = parsedData;
+    }
+
+    // Merge parsedData into data so structured fields always win if Claude missed them
+    Object.keys(parsedData).forEach(k => {
+      if (!data[k] && parsedData[k]) data[k] = parsedData[k];
+    });
 
     // ── 5. Create pending report in DB ────────────────────────────────────────
     const db = readDB();
@@ -902,4 +922,5 @@ app.listen(PORT,()=>{
   console.log(`\n  Prime Time Report Portal`);
   console.log(`  http://localhost:${PORT}  |  Password: ${PORTAL_PASSWORD}\n`);
 });
+
 
