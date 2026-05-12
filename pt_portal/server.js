@@ -266,6 +266,10 @@ app.get('/upload', requireAuth, (req, res) => {
         const res=await fetch('/api/extract',{method:'POST',body:fd});
         const json=await res.json();
         if(!json.ok)throw new Error(json.error);
+        // Store report data in sessionStorage so editor can load it even if DB resets
+        if(json.report){
+          try{ sessionStorage.setItem('report_'+json.reportId, JSON.stringify(json.report)); }catch(e){}
+        }
         st.innerHTML='<span style="color:#4CAF50;font-weight:600">&#10003; Done! '+json.photosFound+' photos extracted — opening editor...</span>';
         setTimeout(()=>window.location.href='/edit/'+json.reportId,800);
       }catch(e){st.innerHTML='<span style="color:#E53935">&#10005; '+e.message+'</span>';go.style.display='block';}
@@ -437,6 +441,7 @@ function editorPage(reportId) {
       'const LABELS=["Indoor Head Unit","Indoor Unit Name Plate","Outdoor Unit","Outdoor Unit Name Plate","Pipe Run","Controller Screen","Remote Control","Circuit Breaker / RCD","Additional View"];',
       'const photoData=new Array(9).fill(null);',
       'const photoCaptions=[...LABELS];',
+      'const photoRotation=new Array(9).fill(0);',
       'const naState={};',
 
       'function na(id){',
@@ -444,6 +449,27 @@ function editorPage(reportId) {
       '  naState[id]=!naState[id];',
       '  fld.classList.toggle("na",naState[id]);',
       '  const btn=fld.querySelector(".na-btn");if(btn)btn.classList.toggle("on",naState[id]);',
+      '}',
+
+      'function rotatePh(i,e){',
+      '  e.stopPropagation();',
+      '  photoRotation[i]=(photoRotation[i]+90)%360;',
+      '  // Redraw the image with new rotation by re-rendering to canvas',
+      '  const img=new Image();',
+      '  img.onload=function(){',
+      '    const canvas=document.createElement("canvas");',
+      '    const r=photoRotation[i];',
+      '    const swap=r===90||r===270;',
+      '    canvas.width=swap?img.height:img.width;',
+      '    canvas.height=swap?img.width:img.height;',
+      '    const ctx=canvas.getContext("2d");',
+      '    ctx.translate(canvas.width/2,canvas.height/2);',
+      '    ctx.rotate(r*Math.PI/180);',
+      '    ctx.drawImage(img,-img.width/2,-img.height/2);',
+      '    photoData[i]=canvas.toDataURL("image/jpeg",0.92);',
+      '    buildPhotos();',
+      '  };',
+      '  img.src=photoData[i];',
       '}',
 
       'function buildPhotos(){',
@@ -459,10 +485,17 @@ function editorPage(reportId) {
       '    if(photoData[i]){',
       '      slot.classList.add("filled");',
       '      const img=document.createElement("img");img.src=photoData[i];slot.insertBefore(img,slot.firstChild);',
-      '      const del=document.createElement("button");del.textContent="x";',
+      '      // Delete button',
+      '      const del=document.createElement("button");del.textContent="\u2715";',
       '      del.style.cssText="position:absolute;top:4px;right:4px;background:rgba(0,0,0,.7);color:#fff;border:none;border-radius:50%;width:22px;height:22px;font-size:11px;cursor:pointer;z-index:10";',
-      '      del.onclick=e=>{e.stopPropagation();photoData[i]=null;photoCaptions[i]=LABELS[i];buildPhotos();};',
+      '      del.onclick=e=>{e.stopPropagation();photoData[i]=null;photoRotation[i]=0;photoCaptions[i]=LABELS[i];buildPhotos();};',
       '      slot.appendChild(del);',
+      '      // Rotate button',
+      '      const rot=document.createElement("button");rot.textContent="\u21bb";',
+      '      rot.title="Rotate 90\u00b0";',
+      '      rot.style.cssText="position:absolute;top:4px;left:4px;background:rgba(0,0,0,.7);color:#fff;border:none;border-radius:50%;width:22px;height:22px;font-size:13px;cursor:pointer;z-index:10;line-height:1";',
+      '      rot.onclick=e=>rotatePh(i,e);',
+      '      slot.appendChild(rot);',
       '    }',
       '    const cw=document.createElement("div");cw.className="cap-in";',
       '    const ci=document.createElement("input");ci.type="text";ci.id="cap"+i;ci.value=photoCaptions[i]||lbl;ci.placeholder=lbl;',
@@ -484,13 +517,13 @@ function editorPage(reportId) {
       '  if(d.drainPump){const r=document.querySelector(\'input[name="dp"][value="\'+d.drainPump+\'"]\');if(r)r.checked=true;}',
       '  if(d.wearTear){const v=d.wearTear.toLowerCase().includes("no")?"No signs observed":"Signs present";const r=document.querySelector(\'input[name="wt"][value="\'+v+\'"]\');if(r)r.checked=true;}',
       '  // Photos',
-      '  if(d.photos&&Array.isArray(d.photos)){d.photos.forEach((p,i)=>{if(p){if(p.data)photoData[i]=p.data;if(p.caption)photoCaptions[i]=p.caption;}});}',
+      '  if(d.photos&&Array.isArray(d.photos)){d.photos.forEach((p,i)=>{if(p){if(p.data)photoData[i]=p.data;if(p.caption)photoCaptions[i]=p.caption;if(p.rotation)photoRotation[i]=p.rotation||0;}});}',
       '  if(d.reportText)window._rt=d.reportText;',
       '}',
 
       'const g=id=>{const el=document.getElementById(id);if(!el)return"";const f=el.closest(".fld");if(f&&f.classList.contains("na"))return"N/A";return el.value?.trim()||"";};',
       'const radio=n=>{const c=document.querySelector(\'input[name="\'+n+\'"]:checked\');if(!c)return"";const f=c.closest(".fld");if(f&&f.classList.contains("na"))return"N/A";return c.value;};',
-      'function collect(){return{address:g("address"),inspDate:g("inspDate"),inspTime:g("inspTime"),rptDate:g("rptDate"),insured:g("insured"),tech:g("tech"),techSig:g("techSig"),item:g("item"),model:g("model"),age:g("age"),fault:g("fault"),cable:g("cable"),pipe:g("pipe"),pipeSize:g("pipeSize"),mount:g("mount"),ownerDate:g("ownerDate"),drainPump:radio("dp"),wearTear:radio("wt"),findings:g("findTxt"),causeS:g("causeS"),causeD:g("causeD"),rec:g("recTxt"),repair:g("repTxt"),summary:g("sumTxt"),photos:photoData.map((d,i)=>({data:d,caption:document.getElementById("cap"+i)?.value||LABELS[i]}))};};',
+      'function collect(){return{address:g("address"),inspDate:g("inspDate"),inspTime:g("inspTime"),rptDate:g("rptDate"),insured:g("insured"),tech:g("tech"),techSig:g("techSig"),item:g("item"),model:g("model"),age:g("age"),fault:g("fault"),cable:g("cable"),pipe:g("pipe"),pipeSize:g("pipeSize"),mount:g("mount"),ownerDate:g("ownerDate"),drainPump:radio("dp"),wearTear:radio("wt"),findings:g("findTxt"),causeS:g("causeS"),causeD:g("causeD"),rec:g("recTxt"),repair:g("repTxt"),summary:g("sumTxt"),photos:photoData.map((d,i)=>({data:d,caption:document.getElementById("cap"+i)?.value||LABELS[i],rotation:photoRotation[i]||0}))};};',
 
       'async function generate(){',
       '  const d=collect(),btn=document.getElementById("genBtn"),st=document.getElementById("st"),rp=document.getElementById("rp"),pdf=document.getElementById("pdfBtn");',
@@ -541,14 +574,14 @@ function editorPage(reportId) {
       '(async()=>{',
       '  if(REPORT_ID){',
       '    try{',
-      '      const r=await fetch("/api/report/"+REPORT_ID);',
-      '      const data=await r.json();',
-      '      if(data){',
-      '        prefill(data);',
-      '        if(data.photos&&Array.isArray(data.photos)){',
-      '          data.photos.forEach((p,i)=>{if(p&&p.data)photoData[i]=p.data;if(p&&p.caption)photoCaptions[i]=p.caption;});',
-      '        }',
-      '      }',
+      '      // Try sessionStorage first (survives Railway redeploys)',
+      '      let data=null;',
+      '      try{const s=sessionStorage.getItem("report_"+REPORT_ID);if(s)data=JSON.parse(s);}catch(e){}',
+      '      // Fall back to API',
+      '      if(!data){const r=await fetch("/api/report/"+REPORT_ID);data=await r.json();}',
+      '      console.log("findings:",data?.findings?.substring(0,60));',
+      '      console.log("causeD:",data?.causeD?.substring(0,60));',
+      '      if(data)prefill(data);',
       '    }catch(e){console.error("Load failed:",e);}',
       '  }',
       '  buildPhotos();',
@@ -745,7 +778,8 @@ Write ONLY this JSON object — no markdown, no extra text:
     req.session.lastReport = report;
     req.session.save();
 
-    res.json({ ok: true, reportId: report.id, photosFound: labelledPhotos.length });
+    // Return the full report so the frontend can store it and prefill immediately
+    res.json({ ok: true, reportId: report.id, photosFound: labelledPhotos.length, report });
 
   } catch(err) {
     console.error('Extract error:', err);
@@ -759,6 +793,14 @@ app.get('/api/report/:id', requireAuth, (req, res) => {
   let r = DB.reports.find(r => r.id === req.params.id);
   if (!r && req.session.lastReport?.id === req.params.id) r = req.session.lastReport;
   if (!r) return res.status(404).json(null);
+  // Log narrative fields to confirm they exist
+  console.log('GET report fields:', {
+    findings: r.findings ? r.findings.substring(0,50)+'...' : 'MISSING',
+    causeD:   r.causeD   ? r.causeD.substring(0,50)+'...'   : 'MISSING',
+    rec:      r.rec      ? r.rec.substring(0,50)+'...'      : 'MISSING',
+    repair:   r.repair   ? r.repair.substring(0,50)+'...'   : 'MISSING',
+    summary:  r.summary  ? r.summary.substring(0,50)+'...'  : 'MISSING',
+  });
   res.json(r);
 });
 
@@ -923,4 +965,5 @@ app.listen(PORT, () => {
   console.log(`\n  Prime Time Report Portal`);
   console.log(`  http://localhost:${PORT}\n`);
 });
+
 
