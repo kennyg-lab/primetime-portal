@@ -563,30 +563,34 @@ function editorPage(reportId) {
       'const SECS=["site","unit","findings","damage","rec","summary","photos"];',
       'window.addEventListener("scroll",()=>{let c=SECS[0];SECS.forEach(id=>{const el=document.getElementById(id);if(el&&el.getBoundingClientRect().top<110)c=id;});document.querySelectorAll(".nav-a").forEach(a=>a.classList.toggle("on",a.getAttribute("href")==="#"+c));},{passive:true});',
 
-      'document.getElementById("genBtn").onclick=generate;',
-      'document.getElementById("pdfBtn").onclick=exportPDF;',
-      'document.getElementById("saveBtn").onclick=()=>saveDraft(false);',
-      'document.getElementById("sGen").onclick=e=>{e.preventDefault();generate();};',
-      'document.getElementById("sSave").onclick=e=>{e.preventDefault();saveDraft(false);};',
-      'document.getElementById("sPDF").onclick=e=>{e.preventDefault();exportPDF();};',
-
-      'if(INIT)prefill(INIT);',
-      '(async()=>{',
-      '  if(REPORT_ID){',
-      '    try{',
-      '      // Try sessionStorage first (survives Railway redeploys)',
-      '      let data=null;',
-      '      try{const s=sessionStorage.getItem("report_"+REPORT_ID);if(s)data=JSON.parse(s);}catch(e){}',
-      '      // Fall back to API',
-      '      if(!data){const r=await fetch("/api/report/"+REPORT_ID);data=await r.json();}',
-      '      console.log("findings:",data?.findings?.substring(0,60));',
-      '      console.log("causeD:",data?.causeD?.substring(0,60));',
-      '      if(data)prefill(data);',
-      '    }catch(e){console.error("Load failed:",e);}',
-      '  }',
-      '  buildPhotos();',
-      '  if(window._rt)document.getElementById("pdfBtn").style.display="inline-flex";',
-      '})();',
+      'document.addEventListener("DOMContentLoaded",async function(){',
+      'try{document.getElementById("genBtn").onclick=generate;}catch(e){}',
+      'try{document.getElementById("pdfBtn").onclick=exportPDF;}catch(e){}',
+      'try{document.getElementById("saveBtn").onclick=()=>saveDraft(false);}catch(e){}',
+      'try{document.getElementById("sGen").onclick=e=>{e.preventDefault();generate();};}catch(e){}',
+      'try{document.getElementById("sSave").onclick=e=>{e.preventDefault();saveDraft(false);};}catch(e){}',
+      'try{document.getElementById("sPDF").onclick=e=>{e.preventDefault();exportPDF();};}catch(e){}',
+      'console.log("Script started, REPORT_ID="+REPORT_ID);',
+      'let data=null;',
+      'if(REPORT_ID){',
+      '  try{',
+      '    try{const s=sessionStorage.getItem("report_"+REPORT_ID);if(s){data=JSON.parse(s);console.log("Loaded from sessionStorage");}}catch(e){console.log("sessionStorage err:",e);}',
+      '    if(!data){',
+      '      console.log("Fetching from API...");',
+      '      const r=await fetch("/api/report/"+REPORT_ID);',
+      '      if(r.ok){data=await r.json();console.log("Loaded from API");}',
+      '      else console.log("API returned:",r.status);',
+      '    }',
+      '    if(data){',
+      '      console.log("findings:",data.findings?data.findings.substring(0,80):"MISSING");',
+      '      console.log("causeD:",data.causeD?data.causeD.substring(0,80):"MISSING");',
+      '      prefill(data);',
+      '    } else {console.log("No data found");}',
+      '  }catch(e){console.error("Load failed:",e);}',
+      '}',
+      'buildPhotos();',
+      'if(window._rt)document.getElementById("pdfBtn").style.display="inline-flex";',
+      '});',
       '</script>'
     ].join('\n')
   );
@@ -600,43 +604,46 @@ app.post('/api/extract', requireAuth, upload.single('pdf'), async (req, res) => 
   try {
     // 1. Extract text
     const pdfData = await pdfParse(req.file.buffer);
-    const lines   = pdfData.text.split('\n').map(l => l.trim()).filter(Boolean);
 
     // 2. Send full PDF text to Claude to extract ALL fields AND write narrative
-    const fullText = pdfData.text.substring(0, 6000);
+    const fullText = pdfData.text.substring(0, 12000);
 
     const extractPrompt = `You are processing an iAudit insurance inspection report for Prime Time Electricians.
 
-Extract the data fields and write the narrative sections. Return ONLY valid JSON, no markdown.
+Read the full PDF text below and do two things:
+1. Extract all the structured data fields
+2. Write professional narrative sections using ALL available information — especially the "Details of damage" field which contains the technician's notes
+
+Return ONLY valid JSON, no markdown, no explanation.
 
 RAW PDF TEXT:
 ${fullText}
 
-Return this exact JSON structure with all fields populated from the PDF text:
+Return this exact JSON — use the technician's damage details notes to write rich, specific narrative:
 {
-  "address": "full site address",
-  "inspDate": "inspection date e.g. 8 May 2026",
-  "inspTime": "inspection time e.g. 10:59 AWST",
+  "address": "full site address or empty if not shown",
+  "inspDate": "inspection date formatted as 8 May 2026",
+  "inspTime": "inspection time e.g. 11:09 AWST",
   "rptDate": "same as inspection date",
   "insured": "full name of person met with",
   "tech": "technician name from Tech Signature",
-  "item": "item name e.g. Switchboard RCBOs",
-  "model": "make and model",
-  "age": "approximate age",
-  "fault": "fault codes or empty string",
-  "cable": "circuit cable size",
+  "item": "item name",
+  "model": "make and model or empty",
+  "age": "approximate age or empty",
+  "fault": "fault codes or empty",
+  "cable": "circuit cable size or empty",
   "voltage": "voltage reading",
   "cutout": "measurements of cut out",
   "ownerDate": "date of loss or incident",
-  "causeS": "cause of damage short e.g. Water Ingress",
-  "wearTear": "Yes or No",
+  "causeS": "cause of damage short phrase",
+  "wearTear": "Yes or No or N/A",
   "yearBuilt": "year property built",
   "roofType": "roof type",
-  "findings": "Write 3-4 professional sentences describing the property, what was inspected, condition found and measurements taken",
-  "causeD": "Write 3-4 professional sentences explaining in detail how the damage occurred, what components were affected and why the item is unsafe",
-  "rec": "Write 1-2 sentences recommending repair or full replacement and why",
-  "repair": "Write 1 sentence stating specifically what work must be carried out",
-  "summary": "Write 3-4 sentences as a standalone executive summary of the inspection, cause and recommended outcome"
+  "findings": "3-4 professional sentences: describe the property, what was inspected, condition found, voltage readings and any other measurements. Use specific details from the report.",
+  "causeD": "3-4 professional sentences: use the technician's Details of damage notes to explain exactly how and why the damage occurred, what was non-compliant, what faults were found and what interim work has been done.",
+  "rec": "1-2 sentences: state clearly whether full replacement is recommended and why repair is not viable.",
+  "repair": "1 sentence: state specifically what work must be carried out including any measurements or scope.",
+  "summary": "3-4 sentences: standalone executive summary covering property, item, cause, current situation and recommended outcome."
 }`;
 
     let extracted = {};
