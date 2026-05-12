@@ -268,7 +268,12 @@ app.get('/upload', requireAuth, (req, res) => {
         if(!json.ok)throw new Error(json.error);
         // Store report data in sessionStorage so editor can load it even if DB resets
         if(json.report){
-          try{ sessionStorage.setItem('report_'+json.reportId, JSON.stringify(json.report)); }catch(e){}
+          try{
+            // Store only text fields — photos are too large for sessionStorage
+            const textOnly={...json.report, photos:[]};
+            sessionStorage.setItem('report_'+json.reportId, JSON.stringify(textOnly));
+            console.log('Stored in sessionStorage, findings length:', json.report.findings?.length);
+          }catch(e){console.log('sessionStorage failed:',e);}
         }
         st.innerHTML='<span style="color:#4CAF50;font-weight:600">&#10003; Done! '+json.photosFound+' photos extracted — opening editor...</span>';
         setTimeout(()=>window.location.href='/edit/'+json.reportId,800);
@@ -563,34 +568,33 @@ function editorPage(reportId) {
       'const SECS=["site","unit","findings","damage","rec","summary","photos"];',
       'window.addEventListener("scroll",()=>{let c=SECS[0];SECS.forEach(id=>{const el=document.getElementById(id);if(el&&el.getBoundingClientRect().top<110)c=id;});document.querySelectorAll(".nav-a").forEach(a=>a.classList.toggle("on",a.getAttribute("href")==="#"+c));},{passive:true});',
 
-      'document.addEventListener("DOMContentLoaded",async function(){',
-      'try{document.getElementById("genBtn").onclick=generate;}catch(e){}',
-      'try{document.getElementById("pdfBtn").onclick=exportPDF;}catch(e){}',
-      'try{document.getElementById("saveBtn").onclick=()=>saveDraft(false);}catch(e){}',
-      'try{document.getElementById("sGen").onclick=e=>{e.preventDefault();generate();};}catch(e){}',
-      'try{document.getElementById("sSave").onclick=e=>{e.preventDefault();saveDraft(false);};}catch(e){}',
-      'try{document.getElementById("sPDF").onclick=e=>{e.preventDefault();exportPDF();};}catch(e){}',
+      'document.getElementById("genBtn").onclick=generate;',
+      'document.getElementById("pdfBtn").onclick=exportPDF;',
+      'document.getElementById("saveBtn").onclick=()=>saveDraft(false);',
+      'document.getElementById("sGen").onclick=e=>{e.preventDefault();generate();};',
+      'document.getElementById("sSave").onclick=e=>{e.preventDefault();saveDraft(false);};',
+      'document.getElementById("sPDF").onclick=e=>{e.preventDefault();exportPDF();};',
       'console.log("Script started, REPORT_ID="+REPORT_ID);',
-      'let data=null;',
-      'if(REPORT_ID){',
-      '  try{',
-      '    try{const s=sessionStorage.getItem("report_"+REPORT_ID);if(s){data=JSON.parse(s);console.log("Loaded from sessionStorage");}}catch(e){console.log("sessionStorage err:",e);}',
-      '    if(!data){',
-      '      console.log("Fetching from API...");',
-      '      const r=await fetch("/api/report/"+REPORT_ID);',
-      '      if(r.ok){data=await r.json();console.log("Loaded from API");}',
-      '      else console.log("API returned:",r.status);',
-      '    }',
-      '    if(data){',
-      '      console.log("findings:",data.findings?data.findings.substring(0,80):"MISSING");',
-      '      console.log("causeD:",data.causeD?data.causeD.substring(0,80):"MISSING");',
-      '      prefill(data);',
-      '    } else {console.log("No data found");}',
-      '  }catch(e){console.error("Load failed:",e);}',
-      '}',
-      'buildPhotos();',
-      'if(window._rt)document.getElementById("pdfBtn").style.display="inline-flex";',
-      '});',
+      '(async function(){',
+      '  let data=null;',
+      '  if(REPORT_ID){',
+      '    try{',
+      '      try{const s=sessionStorage.getItem("report_"+REPORT_ID);if(s){data=JSON.parse(s);console.log("Loaded from sessionStorage");}}catch(e){console.log("sessionStorage err:",e);}',
+      '      if(!data){',
+      '        console.log("Fetching from API...");',
+      '        const r=await fetch("/api/report/"+REPORT_ID);',
+      '        if(r.ok){data=await r.json();console.log("Loaded from API");}',
+      '        else console.log("API returned:",r.status);',
+      '      }',
+      '      if(data){',
+      '        console.log("findings:",data.findings?data.findings.substring(0,80):"MISSING");',
+      '        prefill(data);',
+      '      } else {console.log("No data found");}',
+      '    }catch(e){console.error("Load failed:",e);}',
+      '  }',
+      '  buildPhotos();',
+      '  if(window._rt)document.getElementById("pdfBtn").style.display="inline-flex";',
+      '})();',
       '</script>'
     ].join('\n')
   );
