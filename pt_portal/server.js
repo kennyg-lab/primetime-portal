@@ -323,11 +323,8 @@ textarea{resize:vertical;min-height:80px;line-height:1.65}
 .hidden{display:none}
 `;
 
-function editorPage(reportId, reportJson) {
-  const safeId   = JSON.stringify(reportId || null);
-  const safeData = reportJson
-    ? Buffer.from(JSON.stringify(reportJson)).toString('base64')
-    : '';
+function editorPage(reportId) {
+  const safeId = JSON.stringify(reportId || null);
 
   return page(
     reportId ? 'Edit Report' : 'New Report',
@@ -436,8 +433,7 @@ function editorPage(reportId, reportJson) {
       // SCRIPT
       '<script>',
       'const REPORT_ID=' + safeId + ';',
-      'const INIT_B64="' + safeData + '";',
-      'const INIT=INIT_B64?JSON.parse(atob(INIT_B64)):null;',
+      'let INIT=null;',
       'const LABELS=["Indoor Head Unit","Indoor Unit Name Plate","Outdoor Unit","Outdoor Unit Name Plate","Pipe Run","Controller Screen","Remote Control","Circuit Breaker / RCD","Additional View"];',
       'const photoData=new Array(9).fill(null);',
       'const photoCaptions=[...LABELS];',
@@ -542,20 +538,29 @@ function editorPage(reportId, reportJson) {
       'document.getElementById("sPDF").onclick=e=>{e.preventDefault();exportPDF();};',
 
       'if(INIT)prefill(INIT);',
-      'buildPhotos();',
-      'if(window._rt)document.getElementById("pdfBtn").style.display="inline-flex";',
+      '(async()=>{',
+      '  if(REPORT_ID){',
+      '    try{',
+      '      const r=await fetch("/api/report/"+REPORT_ID);',
+      '      const data=await r.json();',
+      '      if(data){',
+      '        prefill(data);',
+      '        if(data.photos&&Array.isArray(data.photos)){',
+      '          data.photos.forEach((p,i)=>{if(p&&p.data)photoData[i]=p.data;if(p&&p.caption)photoCaptions[i]=p.caption;});',
+      '        }',
+      '      }',
+      '    }catch(e){console.error("Load failed:",e);}',
+      '  }',
+      '  buildPhotos();',
+      '  if(window._rt)document.getElementById("pdfBtn").style.display="inline-flex";',
+      '})();',
       '</script>'
     ].join('\n')
   );
 }
 
-app.get('/new',      requireAuth, (req, res) => res.send(editorPage(null, null)));
-app.get('/edit/:id', requireAuth, (req, res) => {
-  readDB();
-  const r = DB.reports.find(r => r.id === req.params.id)
-    || (req.session.lastReport?.id === req.params.id ? req.session.lastReport : null);
-  res.send(editorPage(req.params.id, r || null));
-});
+app.get('/new',      requireAuth, (req, res) => res.send(editorPage(null)));
+app.get('/edit/:id', requireAuth, (req, res) => res.send(editorPage(req.params.id)));
 
 // ── EXTRACT iAudit PDF ────────────────────────────────────────────────────────
 app.post('/api/extract', requireAuth, upload.single('pdf'), async (req, res) => {
@@ -564,74 +569,76 @@ app.post('/api/extract', requireAuth, upload.single('pdf'), async (req, res) => 
     const pdfData = await pdfParse(req.file.buffer);
     const lines   = pdfData.text.split('\n').map(l => l.trim()).filter(Boolean);
 
-    const li  = label => lines.findIndex(l => l === label);
-    const ln  = (i, off=1) => (i !== -1 && lines[i+off]) ? lines[i+off] : '';
-    const gn  = label => { const i=li(label); return i!==-1?ln(i):''; };
+    // Parse structured fields from known PDF positions
+    const text  = pdfData.text;
+    const rawLines = text.split('\n').map(l => l.trim()).filter(Boolean);
 
-    // 2. Parse structured fields using known iAudit PDF positions
-    const siteLabel = li('Site Address');
-    const addr1     = siteLabel > 1 ? lines[siteLabel-2] : '';
-    const addr2     = siteLabel > 0 ? lines[siteLabel-1] : '';
-    const address   = (addr2 && !addr2.includes('AWST') && addr2 !== '0')
-      ? addr1 + ' ' + addr2 : addr1;
+    const li = label => rawLines.findIndex(l => l === label);
+    const after = (label, offset=1) => {
+      const i = li(label);
+      return i !== -1 && rawLines[i+offset] ? rawLines[i+offset] : '';
+    };
 
-    const dateLabel = li('Date');
-    const dateRaw   = dateLabel !== -1 ? ln(dateLabel, 2) : '';
-    const dtM       = dateRaw.match(/(\d+\s+\w+\s+\d{4})\s+(\d+:\d+\s+\w+)/);
+    // Address: lines 16+17 before "Site Address" label
+    const siteIdx = li('Site Address');
+    const addr1   = siteIdx > 1 ? rawLines[siteIdx-3] : '';
+    const addr2   = siteIdx > 0 ? rawLines[siteIdx-2] : '';
+    const address = [addr1, addr2].filter(a => a && a !== '0' && !/AWST/.test(a)).join(' ');
 
-    const insuredLabel = li('Full Name of Person you met with');
-    const insured      = insuredLabel !== -1 ? ln(insuredLabel) : '';
+    // Date/time: line 15 = "8 May 2026 10:59 AWST"
+    const dateLineIdx = rawLines.findIndex(l => /\d+ \w+ \d{4} \d+:\d+ AWST/.test(l));
+    const dateLine    = dateLineIdx !== -1 ? rawLines[dateLineIdx] : '';
+    const dtM         = dateLine.match(/(\d+ \w+ \d{4}) (\d+:\d+ AWST)/);
 
-    const techLabel = li('Tech Signature');
-    let tech = '';
-    if (techLabel !== -1) {
-      for (let j = techLabel+1; j < Math.min(techLabel+5, lines.length); j++) {
-        const v = lines[j];
-        if (v && !/\d+\s+\w+\s+\d{4}/.test(v) && !v.startsWith('Private') && v !== '0') {
-          tech = v; break;
-        }
-      }
-    }
+    // Insured and tech
+    const insured = after('Full Name of Person you met with');
+    const techIdx = li('Tech Signature');
+    const tech    = techIdx !== -1 ? rawLines[techIdx+1] : '';
 
-    // Item block: Item Inspected, Item name, Date of loss, Make and Model — then values
-    const itemIdx = li('Item Inspected');
-    const itemName  = itemIdx !== -1 ? lines[itemIdx+5] : '';
-    const itemModel = itemIdx !== -1 ? lines[itemIdx+7] : '';
-    const itemDate  = itemIdx !== -1 ? lines[itemIdx+6] : '';
+    // Item block
+    const itemInspIdx = li('Item Inspected');
+    const itemName    = itemInspIdx !== -1 ? rawLines[itemInspIdx+6] : '';
+    const itemDate    = itemInspIdx !== -1 ? rawLines[itemInspIdx+7] : '';
+    const itemModel   = itemInspIdx !== -1 ? rawLines[itemInspIdx+8] : '';
 
-    // Cable/wear/cause block
-    const cableIdx = li('Circuit Cable Size');
-    const cable    = cableIdx !== -1 ? lines[cableIdx+3] : '';
-    const wearTear = cableIdx !== -1 ? lines[cableIdx+4] : '';
-    const causeS   = cableIdx !== -1 ? lines[cableIdx+5] : '';
+    // Age, voltage, fault, cutout
+    const age     = after('Approximate Age of Item');
+    const voltage = after('Voltage Reading from Circuit');
+    const fault   = after('Fault Codes Shown on Controller').replace(/^N\/A$/i, '');
+    const cutout  = after('Measurements of cut out');
+
+    // Cable/wear/cause
+    const cableIdx  = li('Circuit Cable Size');
+    const cable     = cableIdx !== -1 ? rawLines[cableIdx+3] : '';
+    const wearTear  = cableIdx !== -1 ? rawLines[cableIdx+4] : '';
+    const causeS    = cableIdx !== -1 ? rawLines[cableIdx+5] : '';
+
+    const yearBuilt = after('What year was the property built ?');
+    const roofType  = after('Roof type ?');
 
     const structured = {
       address,
-      inspDate:  dtM ? dtM[1] : dateRaw,
+      inspDate:  dtM ? dtM[1] : dateLine,
       inspTime:  dtM ? dtM[2] : '',
-      rptDate:   dtM ? dtM[1] : dateRaw,
+      rptDate:   dtM ? dtM[1] : dateLine,
       insured,
       tech,
-      item:      itemName  || gn('Item name'),
-      model:     itemModel || gn('Make and Model'),
-      ownerDate: itemDate  || gn('Date of loss / Incident'),
-      age:       gn('Approximate Age of Item'),
-      voltage:   gn('Voltage Reading from Circuit'),
-      fault:     gn('Fault Codes Shown on Controller').replace(/^N\/A$/i, ''),
-      cutout:    gn('Measurements of cut out'),
-      cable:     cable    || gn('Circuit Cable Size'),
-      wearTear:  wearTear || '',
-      causeS:    causeS   || gn('Damage is the Caused By ?'),
-      yearBuilt: gn('What year was the property built ?'),
-      roofType:  gn('Roof type ?'),
+      item:      itemName,
+      model:     itemModel,
+      ownerDate: itemDate,
+      age,
+      voltage,
+      fault,
+      cutout,
+      cable,
+      wearTear,
+      causeS,
+      yearBuilt,
+      roofType,
     };
 
-    console.log('Structured data parsed:', JSON.stringify({
-      address: structured.address,
-      item: structured.item,
-      causeS: structured.causeS,
-      tech: structured.tech
-    }));
+    console.log('=== PARSED FIELDS ===');
+    console.log(JSON.stringify(structured, null, 2));
 
     // 3. Extract photos
     const pdfDoc    = await PDFLib.load(req.file.buffer, { ignoreEncryption: true });
