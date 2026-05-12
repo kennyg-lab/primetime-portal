@@ -367,6 +367,7 @@ function buildEditor(reportId, data) {
         </div>
         <div class="rp" id="rp"></div>
         <div class="gen-bar">
+          <button class="btn btn-y" id="writeBtn">&#9998; Write Sections</button>
           <button class="btn btn-blk" id="genBtn">&#9889; Generate Report</button>
           <button class="btn btn-y" id="pdfBtn" style="display:none">&#8595; Export PDF</button>
           <button class="btn btn-ghost btn-sm" id="saveBtn">Save Draft</button>
@@ -472,7 +473,25 @@ function buildEditor(reportId, data) {
       btn.textContent='Export PDF';
     }
 
-    document.getElementById('genBtn').onclick=generate;
+    async function writeSections(){
+      const d=collect(),btn=document.getElementById('writeBtn'),st=document.getElementById('st');
+      btn.textContent='Writing...';st.className='st on';st.textContent='Claude is writing the report sections...';
+      try{
+        const res=await fetch('/api/write-sections',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(d)});
+        const json=await res.json();
+        if(!json.ok)throw new Error(json.error);
+        if(json.findings)document.getElementById('findTxt').value=json.findings;
+        if(json.causeD)document.getElementById('causeD').value=json.causeD;
+        if(json.rec)document.getElementById('recTxt').value=json.rec;
+        if(json.repair)document.getElementById('repTxt').value=json.repair;
+        if(json.summary)document.getElementById('sumTxt').value=json.summary;
+        st.className='st on ok';st.textContent='Sections written — review and edit, then Generate Report';
+        saveDraft(true);
+      }catch(e){st.className='st on err';st.textContent='Error: '+e.message;}
+      btn.textContent='Write Sections';
+    }
+
+    document.getElementById('writeBtn').onclick=writeSections;
     document.getElementById('pdfBtn').onclick=exportPDF;
     document.getElementById('saveBtn').onclick=()=>saveDraft(false);
     document.getElementById('sGen').onclick=e=>{e.preventDefault();generate();};
@@ -520,55 +539,14 @@ Return ONLY this JSON:
     let data = {};
     try {
       const text = await callClaude([{role:'user',content:extractPrompt}], 1500);
-      console.log('Structured extract (300):', text.substring(0,300));
+      console.log('Extract response:', text.substring(0,300));
       const m = text.match(/\{[\s\S]*\}/);
       if (m) {
         data = JSON.parse(m[0]);
-        console.log('Structured OK. address:', data.address, 'cause:', data.causeS);
+        console.log('Extracted OK — address:', data.address, '| cause:', data.causeS);
       }
     } catch(e) {
-      console.error('Structured extract failed:', e.message);
-    }
-
-    // Second call: write the narrative using extracted data
-    const narrativePrompt = `You are writing a professional insurance inspection report for Prime Time Electricians.
-
-Using the job data below, write five narrative sections. Be specific — use actual names, measurements, and details.
-
-JOB DATA:
-- Property: ${data.address || 'not recorded'} (built ${data.yearBuilt || 'unknown'}, ${data.roofType || 'unknown'} roof)
-- Inspection: ${data.inspDate || ''} at ${data.inspTime || ''} 
-- Insured: ${data.insured || 'not recorded'}
-- Technician: ${data.tech || 'not recorded'}
-- Item: ${data.item || 'not recorded'} (${data.model || 'unknown make'}, approx ${data.age || 'unknown'} age)
-- Cable size: ${data.cable || 'not recorded'}
-- Voltage: ${data.voltage || 'not recorded'}
-- Cutout: ${data.cutout || 'not recorded'}
-- Cause of damage: ${data.causeS || 'not recorded'}
-- Wear and tear unrelated: ${data.wearTear || 'No'}
-- Owner reported date: ${data.ownerDate || 'not recorded'}
-- Technician damage notes: ${data.damageDetails || 'none provided'}
-
-Return ONLY this JSON — no markdown:
-{
-  "findings": "3-4 sentences describing the property, what was inspected, condition found and measurements taken",
-  "causeD": "3-4 sentences explaining exactly how the damage occurred using the technician notes, what components failed and why the item cannot continue operating",
-  "rec": "1-2 sentences recommending repair or full replacement and why",
-  "repair": "1 sentence stating specifically what work must be carried out",
-  "summary": "3-4 sentences as a standalone executive summary covering property, item, cause and recommended outcome"
-}`;
-
-    let narrative = {};
-    try {
-      const ntext = await callClaude([{role:'user',content:narrativePrompt}], 2000);
-      console.log('Narrative (300):', ntext.substring(0,300));
-      const nm = ntext.match(/\{[\s\S]*\}/);
-      if (nm) {
-        narrative = JSON.parse(nm[0]);
-        console.log('Narrative OK. findings length:', narrative.findings?.length);
-      }
-    } catch(e) {
-      console.error('Narrative failed:', e.message);
+      console.error('Extract failed:', e.message);
     }
 
     // Extract photos
@@ -608,6 +586,41 @@ Return ONLY this JSON — no markdown:
     }
     // Pad to 9
     while (photos.length<9) photos.push({data:null,caption:'Photo '+(photos.length+1),rotation:0});
+
+    // Write narrative sections
+    let narrative = {};
+    try {
+      const narrativePrompt = `You are writing a professional insurance inspection report for Prime Time Electricians.
+
+Write five narrative sections using the job data below. Use specific details — actual names, measurements and cause.
+
+JOB DATA:
+- Property: ${data.address||'not recorded'} (built ${data.yearBuilt||'unknown'}, ${data.roofType||'unknown'} roof)
+- Inspection: ${data.inspDate||''} at ${data.inspTime||''}
+- Insured: ${data.insured||'not recorded'}
+- Technician: ${data.tech||'not recorded'}
+- Item: ${data.item||'not recorded'} (${data.model||'unknown make'}, approx ${data.age||'unknown'} age)
+- Cable size: ${data.cable||'not recorded'}
+- Voltage: ${data.voltage||'not recorded'}
+- Cutout: ${data.cutout||'not recorded'}
+- Cause: ${data.causeS||'not recorded'}
+- Wear and tear unrelated: ${data.wearTear||'No'}
+- Owner reported date: ${data.ownerDate||'not recorded'}
+- Technician damage notes: ${data.damageDetails||'none provided'}
+
+Return ONLY this JSON — no markdown:
+{
+  "findings": "3-4 sentences describing the property, what was inspected, condition found and measurements taken.",
+  "causeD": "3-4 sentences explaining exactly how damage occurred, what failed and why unsafe.",
+  "rec": "1-2 sentences recommending replacement or repair and why.",
+  "repair": "1 sentence stating specifically what work must be done.",
+  "summary": "3-4 sentences executive summary of property, item, cause and outcome."
+}`;
+      const ntext = await callClaude([{role:'user',content:narrativePrompt}], 2000);
+      console.log('Narrative:', ntext.substring(0,200));
+      const nm = ntext.match(/\{[\s\S]*\}/);
+      if (nm) { narrative = JSON.parse(nm[0]); console.log('Narrative OK, findings length:', narrative.findings?.length); }
+    } catch(e) { console.error('Narrative failed:', e.message); }
 
     const report = {
       id: uuid(),
@@ -692,6 +705,49 @@ Sections: ## 1. Site & Inspection Details  ## 2. Item Inspected  ## 3. Inspectio
     res.json({ok:true,text});
   } catch(e) {
     res.status(500).json({ok:false,error:e.message});
+  }
+});
+
+// ── Write Sections ────────────────────────────────────────────────────────────
+app.post('/api/write-sections', requireAuth, async (req,res) => {
+  const d = req.body;
+  const prompt = `You are writing a professional insurance inspection report for Prime Time Electricians.
+
+Using the job data below, write five narrative sections. Be specific — use the actual property address, item names, measurements, cause and technician notes.
+
+JOB DATA:
+- Property: ${d.address||'not recorded'} (built ${d.yearBuilt||'unknown'}, ${d.roofType||'unknown'} roof)
+- Inspection: ${d.inspDate||''} at ${d.inspTime||''}
+- Insured: ${d.insured||'not recorded'}
+- Technician: ${d.tech||'not recorded'}
+- Item: ${d.item||'not recorded'} (${d.model||'unknown make'}, approx ${d.age||'unknown'} age)
+- Cable size: ${d.cable||'not recorded'}
+- Voltage: ${d.voltage||'not recorded'}
+- Cutout: ${d.cutout||'not recorded'}
+- Cause of damage: ${d.causeS||'not recorded'}
+- Wear and tear unrelated: ${d.wearTear||'No'}
+- Owner reported date: ${d.ownerDate||'not recorded'}
+- Technician damage notes: ${d.damageDetails||'none provided'}
+
+Return ONLY this JSON — no markdown, no preamble:
+{
+  "findings": "3-4 sentences: describe the property, what was inspected, condition found and all measurements taken on site. Use specific details.",
+  "causeD": "3-4 sentences: explain exactly how the damage occurred using all available notes, what components failed and why the item is unsafe to continue operating.",
+  "rec": "1-2 sentences: clearly recommend full replacement or repair and state why.",
+  "repair": "1 sentence: state specifically what work must be carried out.",
+  "summary": "3-4 sentences: standalone executive summary covering property, item inspected, cause of damage and recommended outcome."
+}`;
+
+  try {
+    const text = await callClaude([{role:'user',content:prompt}], 2000);
+    console.log('Write sections response:', text.substring(0,300));
+    const m = text.match(/\{[\s\S]*\}/);
+    if (!m) throw new Error('No JSON in response');
+    const sections = JSON.parse(m[0]);
+    res.json({ok:true, ...sections});
+  } catch(e) {
+    console.error('Write sections failed:', e.message);
+    res.status(500).json({ok:false, error:e.message});
   }
 });
 
