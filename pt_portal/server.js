@@ -602,76 +602,57 @@ app.post('/api/extract', requireAuth, upload.single('pdf'), async (req, res) => 
     const pdfData = await pdfParse(req.file.buffer);
     const lines   = pdfData.text.split('\n').map(l => l.trim()).filter(Boolean);
 
-    // Parse structured fields from known PDF positions
-    const text  = pdfData.text;
-    const rawLines = text.split('\n').map(l => l.trim()).filter(Boolean);
+    // 2. Send full PDF text to Claude to extract ALL fields AND write narrative
+    const fullText = pdfData.text.substring(0, 6000);
 
-    const li = label => rawLines.findIndex(l => l === label);
-    const after = (label, offset=1) => {
-      const i = li(label);
-      return i !== -1 && rawLines[i+offset] ? rawLines[i+offset] : '';
-    };
+    const extractPrompt = `You are processing an iAudit insurance inspection report for Prime Time Electricians.
 
-    // Address: lines 16+17 before "Site Address" label
-    const siteIdx = li('Site Address');
-    const addr1   = siteIdx > 1 ? rawLines[siteIdx-3] : '';
-    const addr2   = siteIdx > 0 ? rawLines[siteIdx-2] : '';
-    const address = [addr1, addr2].filter(a => a && a !== '0' && !/AWST/.test(a)).join(' ');
+Extract the data fields and write the narrative sections. Return ONLY valid JSON, no markdown.
 
-    // Date/time: line 15 = "8 May 2026 10:59 AWST"
-    const dateLineIdx = rawLines.findIndex(l => /\d+ \w+ \d{4} \d+:\d+ AWST/.test(l));
-    const dateLine    = dateLineIdx !== -1 ? rawLines[dateLineIdx] : '';
-    const dtM         = dateLine.match(/(\d+ \w+ \d{4}) (\d+:\d+ AWST)/);
+RAW PDF TEXT:
+${fullText}
 
-    // Insured and tech
-    const insured = after('Full Name of Person you met with');
-    const techIdx = li('Tech Signature');
-    const tech    = techIdx !== -1 ? rawLines[techIdx+1] : '';
+Return this exact JSON structure with all fields populated from the PDF text:
+{
+  "address": "full site address",
+  "inspDate": "inspection date e.g. 8 May 2026",
+  "inspTime": "inspection time e.g. 10:59 AWST",
+  "rptDate": "same as inspection date",
+  "insured": "full name of person met with",
+  "tech": "technician name from Tech Signature",
+  "item": "item name e.g. Switchboard RCBOs",
+  "model": "make and model",
+  "age": "approximate age",
+  "fault": "fault codes or empty string",
+  "cable": "circuit cable size",
+  "voltage": "voltage reading",
+  "cutout": "measurements of cut out",
+  "ownerDate": "date of loss or incident",
+  "causeS": "cause of damage short e.g. Water Ingress",
+  "wearTear": "Yes or No",
+  "yearBuilt": "year property built",
+  "roofType": "roof type",
+  "findings": "Write 3-4 professional sentences describing the property, what was inspected, condition found and measurements taken",
+  "causeD": "Write 3-4 professional sentences explaining in detail how the damage occurred, what components were affected and why the item is unsafe",
+  "rec": "Write 1-2 sentences recommending repair or full replacement and why",
+  "repair": "Write 1 sentence stating specifically what work must be carried out",
+  "summary": "Write 3-4 sentences as a standalone executive summary of the inspection, cause and recommended outcome"
+}`;
 
-    // Item block
-    const itemInspIdx = li('Item Inspected');
-    const itemName    = itemInspIdx !== -1 ? rawLines[itemInspIdx+6] : '';
-    const itemDate    = itemInspIdx !== -1 ? rawLines[itemInspIdx+7] : '';
-    const itemModel   = itemInspIdx !== -1 ? rawLines[itemInspIdx+8] : '';
+    let extracted = {};
+    try {
+      const extractText = await callClaude([{ role: 'user', content: extractPrompt }], 2000);
+      console.log('Extract response (first 300):', extractText.substring(0, 300));
+      const jsonMatch = extractText.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        extracted = JSON.parse(jsonMatch[0]);
+        console.log('Extracted OK — address:', extracted.address, '| findings length:', extracted.findings?.length);
+      }
+    } catch(e) {
+      console.error('Extraction failed:', e.message);
+    }
 
-    // Age, voltage, fault, cutout
-    const age     = after('Approximate Age of Item');
-    const voltage = after('Voltage Reading from Circuit');
-    const fault   = after('Fault Codes Shown on Controller').replace(/^N\/A$/i, '');
-    const cutout  = after('Measurements of cut out');
-
-    // Cable/wear/cause
-    const cableIdx  = li('Circuit Cable Size');
-    const cable     = cableIdx !== -1 ? rawLines[cableIdx+3] : '';
-    const wearTear  = cableIdx !== -1 ? rawLines[cableIdx+4] : '';
-    const causeS    = cableIdx !== -1 ? rawLines[cableIdx+5] : '';
-
-    const yearBuilt = after('What year was the property built ?');
-    const roofType  = after('Roof type ?');
-
-    const structured = {
-      address,
-      inspDate:  dtM ? dtM[1] : dateLine,
-      inspTime:  dtM ? dtM[2] : '',
-      rptDate:   dtM ? dtM[1] : dateLine,
-      insured,
-      tech,
-      item:      itemName,
-      model:     itemModel,
-      ownerDate: itemDate,
-      age,
-      voltage,
-      fault,
-      cutout,
-      cable,
-      wearTear,
-      causeS,
-      yearBuilt,
-      roofType,
-    };
-
-    console.log('=== PARSED FIELDS ===');
-    console.log(JSON.stringify(structured, null, 2));
+    const structured = extracted;
 
     // 3. Extract photos
     const pdfDoc    = await PDFLib.load(req.file.buffer, { ignoreEncryption: true });
@@ -720,47 +701,14 @@ app.post('/api/extract', requireAuth, upload.single('pdf'), async (req, res) => 
       labelledPhotos[i] || { data: null, caption: `Photo ${i+1}` }
     );
 
-    // 5. Claude writes the narrative sections from the extracted data
-    const narrativePrompt = `You are a senior licensed electrician writing a professional insurance inspection report for Prime Time Electricians. The field technician has left the written sections blank — you must interpret the job data and write all five sections yourself.
-
-IMPORTANT: Write formal, specific, professional prose. Use the actual property details, item names, measurements and cause. Do not use placeholders.
-
-JOB DATA FROM IAUDIT REPORT:
-- Property address: ${structured.address}
-- Year built: ${structured.yearBuilt || 'unknown'}
-- Roof type: ${structured.roofType || 'unknown'}
-- Single storey
-- Inspection date: ${structured.inspDate} at ${structured.inspTime}
-- Insured: ${structured.insured}
-- Technician: ${structured.tech}
-- Item inspected: ${structured.item}
-- Make/Model: ${structured.model}
-- Approximate age: ${structured.age}
-- Circuit cable size: ${structured.cable}
-- Voltage reading from circuit: ${structured.voltage || '240V'}
-- Fault codes: ${structured.fault || 'None'}
-- Cutout measurements: ${structured.cutout || 'not recorded'}
-- Cause of damage: ${structured.causeS}
-- Wear and tear unrelated to claim: ${structured.wearTear || 'No'}
-- Owner reported incident date: ${structured.ownerDate}
-
-Return ONLY the following JSON — no markdown, no preamble, no explanation:
-{"findings":"On [date], a site inspection was conducted at [address]... describe the property, what was inspected, condition found, measurements taken","causeD":"Explain in detail how water ingress caused damage to the Clipsal RCBOs, what components were affected, why it is unsafe to continue operating","rec":"Clearly state whether repair or full replacement is recommended and why","repair":"State specifically what work must be carried out","summary":"Standalone 3-4 sentence executive summary of the whole inspection, cause and outcome"}`;
-
-    let narrative = {};
-    try {
-      const narrativeText = await callClaude([{ role: 'user', content: narrativePrompt }], 1500);
-      console.log('Narrative raw:', narrativeText.substring(0, 400));
-      const jsonMatch = narrativeText.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        narrative = JSON.parse(jsonMatch[0]);
-        console.log('Narrative parsed OK — findings length:', narrative.findings?.length);
-      } else {
-        console.error('No JSON found in narrative response');
-      }
-    } catch(e) {
-      console.error('Narrative generation failed:', e.message);
-    }
+    // narrative already included in extracted object above
+    const narrative = {
+      findings: extracted.findings || '',
+      causeD:   extracted.causeD   || '',
+      rec:      extracted.rec      || '',
+      repair:   extracted.repair   || '',
+      summary:  extracted.summary  || '',
+    };
 
     // 6. Save report
     const report = {
