@@ -720,43 +720,44 @@ app.post('/api/extract', requireAuth, upload.single('pdf'), async (req, res) => 
       labelledPhotos[i] || { data: null, caption: `Photo ${i+1}` }
     );
 
-    // 5. Claude writes the narrative sections
-    const narrativePrompt = `You are writing a professional insurance inspection report for Prime Time Electricians.
+    // 5. Claude writes the narrative sections from the extracted data
+    const narrativePrompt = `You are a senior licensed electrician writing a professional insurance inspection report for Prime Time Electricians. The field technician has left the written sections blank — you must interpret the job data and write all five sections yourself.
 
-Based on the following job data from an iAudit field report, write four professional narrative sections.
-Be specific — use the actual item name, brand, property details, measurements and cause.
+IMPORTANT: Write formal, specific, professional prose. Use the actual property details, item names, measurements and cause. Do not use placeholders.
 
-JOB DATA:
-- Property: ${structured.address} (built ${structured.yearBuilt || 'unknown'}, ${structured.roofType || ''} roof)
+JOB DATA FROM IAUDIT REPORT:
+- Property address: ${structured.address}
+- Year built: ${structured.yearBuilt || 'unknown'}
+- Roof type: ${structured.roofType || 'unknown'}
+- Single storey
 - Inspection date: ${structured.inspDate} at ${structured.inspTime}
-- Insured person: ${structured.insured}
+- Insured: ${structured.insured}
 - Technician: ${structured.tech}
 - Item inspected: ${structured.item}
 - Make/Model: ${structured.model}
 - Approximate age: ${structured.age}
-- Fault code: ${structured.fault || 'None'}
 - Circuit cable size: ${structured.cable}
-- Voltage reading: ${structured.voltage || 'Not recorded'}
-- Cutout measurements: ${structured.cutout || 'Not recorded'}
+- Voltage reading from circuit: ${structured.voltage || '240V'}
+- Fault codes: ${structured.fault || 'None'}
+- Cutout measurements: ${structured.cutout || 'not recorded'}
 - Cause of damage: ${structured.causeS}
-- Wear and tear unrelated to claim: ${structured.wearTear}
-- Owner reported damage date: ${structured.ownerDate}
+- Wear and tear unrelated to claim: ${structured.wearTear || 'No'}
+- Owner reported incident date: ${structured.ownerDate}
 
-Write ONLY this JSON object — no markdown, no extra text:
-{
-  "findings": "3-4 sentences describing the property, what was inspected, the condition found, and any readings or measurements taken on site",
-  "causeD": "3-4 sentences explaining in detail how the damage occurred, what components were affected, and why the item cannot continue to operate safely",
-  "rec": "1-2 sentences clearly recommending repair or full replacement and the reason why",
-  "repair": "1 sentence stating specifically what work needs to be carried out",
-  "summary": "3-4 sentences as a standalone executive summary covering the property, item inspected, cause of damage, and recommended outcome"
-}`;
+Return ONLY the following JSON — no markdown, no preamble, no explanation:
+{"findings":"On [date], a site inspection was conducted at [address]... describe the property, what was inspected, condition found, measurements taken","causeD":"Explain in detail how water ingress caused damage to the Clipsal RCBOs, what components were affected, why it is unsafe to continue operating","rec":"Clearly state whether repair or full replacement is recommended and why","repair":"State specifically what work must be carried out","summary":"Standalone 3-4 sentence executive summary of the whole inspection, cause and outcome"}`;
 
     let narrative = {};
     try {
       const narrativeText = await callClaude([{ role: 'user', content: narrativePrompt }], 1500);
-      console.log('Narrative response:', narrativeText.substring(0, 300));
+      console.log('Narrative raw:', narrativeText.substring(0, 400));
       const jsonMatch = narrativeText.match(/\{[\s\S]*\}/);
-      if (jsonMatch) narrative = JSON.parse(jsonMatch[0]);
+      if (jsonMatch) {
+        narrative = JSON.parse(jsonMatch[0]);
+        console.log('Narrative parsed OK — findings length:', narrative.findings?.length);
+      } else {
+        console.error('No JSON found in narrative response');
+      }
     } catch(e) {
       console.error('Narrative generation failed:', e.message);
     }
@@ -965,5 +966,4 @@ app.listen(PORT, () => {
   console.log(`\n  Prime Time Report Portal`);
   console.log(`  http://localhost:${PORT}\n`);
 });
-
 
