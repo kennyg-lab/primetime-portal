@@ -444,10 +444,10 @@ function buildEditor(reportId, data) {
       try{
         const res=await fetch('/api/generate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(d)});
         const json=await res.json();if(!json.ok)throw new Error(json.error);
-        window._rt=json.text;st.className='st on ok';st.textContent='Report ready — export PDF when ready';
-        rp.innerHTML=json.text.replace(/^## \\d+\\.\\s*(.+)$/gm,'<h2>$1</h2>').replace(/^## (.+)$/gm,'<h2>$1</h2>').replace(/\\*\\*(.+?)\\*\\*/g,'<strong>$1</strong>').split('\\n\\n').map(b=>b.startsWith('<')?b:'<p>'+b+'</p>').join('');
-        rp.className='rp show';pdf.style.display='inline-flex';
-        saveDraft(true);
+        window._rt=json.text;
+        // Save then redirect to draft report page
+        await saveDraft(true);
+        window.location.href='/draft/'+REPORT_ID;
       }catch(e){st.className='st on err';st.textContent='Error: '+e.message;}
       btn.textContent='Generate Report';
     }
@@ -706,6 +706,81 @@ Sections: ## 1. Site & Inspection Details  ## 2. Item Inspected  ## 3. Inspectio
   } catch(e) {
     res.status(500).json({ok:false,error:e.message});
   }
+});
+
+// ── Draft Report Page ─────────────────────────────────────────────────────────
+app.get('/draft/:id', requireAuth, (req,res) => {
+  readDB();
+  const r = DB.reports.find(r=>r.id===req.params.id)
+    || (req.session.lastReport?.id===req.params.id ? req.session.lastReport : null);
+  if (!r) return res.redirect('/');
+
+  const reportHtml = (r.reportText||'No report generated yet.')
+    .replace(/^## \d+\.\s*(.+)$/gm, '<h2>$1</h2>')
+    .replace(/^## (.+)$/gm, '<h2>$1</h2>')
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .split('\n\n')
+    .map(b => b.startsWith('<') ? b : '<p>' + b.replace(/\n/g,' ') + '</p>')
+    .join('\n');
+
+  res.send(shell('Draft Report', 'dash', `
+    <style>
+    .draft-wrap{display:grid;grid-template-columns:1fr 260px;gap:28px;align-items:start}
+    .draft-body{background:#fff;border:1px solid var(--bdr);border-radius:4px;padding:36px 40px}
+    .draft-body h2{font-family:'Barlow Condensed',sans-serif;font-weight:700;font-size:14px;text-transform:uppercase;letter-spacing:.06em;color:var(--blk);margin:24px 0 8px;padding-bottom:6px;border-bottom:2px solid #FFE600}
+    .draft-body h2:first-child{margin-top:0}
+    .draft-body p{font-size:13px;line-height:1.8;color:#333;margin:4px 0}
+    .draft-body strong{font-weight:600;color:#111}
+    .side-panel{position:sticky;top:80px;display:flex;flex-direction:column;gap:10px}
+    .side-card{background:#F8F8F8;border:1px solid var(--bdr);border-radius:4px;padding:18px}
+    .side-card h3{font-family:'Barlow Condensed',sans-serif;font-weight:700;font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:#999;margin-bottom:12px}
+    .meta-row{font-size:12px;color:#555;margin-bottom:6px;display:flex;justify-content:space-between}
+    .meta-row strong{color:#111;font-weight:600}
+    .status-badge{display:inline-block;background:#FFF8E1;color:#F59E0B;font-size:10px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;padding:4px 10px;border-radius:2px}
+    </style>
+    <div class="page-hd">
+      <div class="page-title">Draft Report</div>
+      <div style="display:flex;gap:8px">
+        <a href="/edit/${r.id}" class="btn btn-ghost btn-sm">&larr; Back to Editor</a>
+        <a href="/download/${r.id}" class="btn btn-blk">&#8595; Export PDF</a>
+        <button onclick="approve('${r.id}')" class="btn btn-grn">&#10003; Approve</button>
+      </div>
+    </div>
+    <div class="draft-wrap">
+      <div class="draft-body">
+        ${reportHtml}
+      </div>
+      <div class="side-panel">
+        <div class="side-card">
+          <h3>Job Details</h3>
+          <div class="meta-row"><span>Address</span><strong>${r.address||'—'}</strong></div>
+          <div class="meta-row"><span>Date</span><strong>${r.inspDate||'—'}</strong></div>
+          <div class="meta-row"><span>Insured</span><strong>${r.insured||'—'}</strong></div>
+          <div class="meta-row"><span>Tech</span><strong>${r.tech||'—'}</strong></div>
+          <div class="meta-row"><span>Item</span><strong>${r.item||'—'}</strong></div>
+          <div class="meta-row"><span>Cause</span><strong>${r.causeS||'—'}</strong></div>
+        </div>
+        <div class="side-card">
+          <h3>Status</h3>
+          <div class="status-badge">${r.status||'pending'}</div>
+        </div>
+        <div class="side-card">
+          <h3>Actions</h3>
+          <a href="/edit/${r.id}" class="btn btn-ghost btn-sm" style="width:100%;justify-content:center;margin-bottom:8px">Edit Sections</a>
+          <a href="/download/${r.id}" class="btn btn-blk btn-sm" style="width:100%;justify-content:center;margin-bottom:8px">&#8595; Export PDF</a>
+          <button onclick="approve('${r.id}')" class="btn btn-grn btn-sm" style="width:100%;justify-content:center">&#10003; Approve Report</button>
+        </div>
+      </div>
+    </div>
+    <script>
+    async function approve(id){
+      await fetch('/api/status/'+id,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({status:'approved'})});
+      document.querySelector('.status-badge').textContent='approved';
+      document.querySelector('.status-badge').style.background='#E8F5E9';
+      document.querySelector('.status-badge').style.color='#4CAF50';
+    }
+    </script>
+  `));
 });
 
 // ── Write Sections ────────────────────────────────────────────────────────────
