@@ -291,6 +291,14 @@ function buildEditor(reportId, data) {
   // Safely encode all text fields as JSON strings for embedding in HTML
   const sf = k => JSON.stringify(data[k]||'');
   const photos = JSON.stringify((data.photos||[]).map(p=>({data:p.data||null,caption:p.caption||'',rotation:p.rotation||0})));
+  // Embed metadata for writeSections (no photos - too large)
+  const meta = JSON.stringify({
+    address:data.address||'', inspDate:data.inspDate||'', inspTime:data.inspTime||'',
+    insured:data.insured||'', tech:data.tech||'', item:data.item||'', model:data.model||'',
+    age:data.age||'', cable:data.cable||'', voltage:data.voltage||'', cutout:data.cutout||'',
+    causeS:data.causeS||'', wearTear:data.wearTear||'', ownerDate:data.ownerDate||'',
+    yearBuilt:data.yearBuilt||'', roofType:data.roofType||'', damageDetails:data.damageDetails||''
+  });
 
   return shell(reportId?'Edit Report':'New Report', reportId?'dash':'new', `
     <style>${EDITOR_CSS}</style>
@@ -378,6 +386,7 @@ function buildEditor(reportId, data) {
     </div>
     <script>
     const REPORT_ID=${JSON.stringify(reportId||null)};
+    const META=${meta};
     const LABELS=["Front of House","Overview Angle 1","Overview Angle 2","Failed Area","Item Overview","Brand/Model Plate","Close Up 1","Close Up 2","Services"];
     const photoData=${photos}.map(p=>p.data?p.data:null);
     const photoCaptions=${photos}.map((p,i)=>p.caption||LABELS[i]||'Photo '+(i+1));
@@ -478,14 +487,8 @@ function buildEditor(reportId, data) {
       const d=collect(),btn=document.getElementById('writeBtn'),st=document.getElementById('st');
       btn.textContent='Writing...';st.className='st on';st.textContent='Claude is writing the report sections — please wait...';
       try{
-        // Load full report data from server to get all extracted fields
-        let fullData=d;
-        if(REPORT_ID){
-          try{
-            const rr=await fetch('/api/report/'+REPORT_ID);
-            if(rr.ok){const rd=await rr.json();if(rd)fullData={...rd,...d};}
-          }catch(e){}
-        }
+        // Merge META (extracted fields) with current form values
+        const fullData={...META,...d};
         const res=await fetch('/api/write-sections',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(fullData)});
         const json=await res.json();
         if(!json.ok)throw new Error(json.error);
