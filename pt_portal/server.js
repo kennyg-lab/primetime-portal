@@ -261,7 +261,7 @@ app.get('/review/:id', requireAuth, (req,res) => {
       <div class="page-title">Report Review</div>
       <div style="display:flex;gap:8px">
         <a href="/edit/${r.id}" class="btn btn-y">&#9998; Edit Report</a>
-        <a href="/download/${r.id}" class="btn btn-ghost btn-sm" style="opacity:.4;pointer-events:none">&#8595; PDF (generate first)</a>
+        <a href="/download/${r.id}" class="btn btn-ghost btn-sm" ${r.reportText?'':'style="opacity:.4;pointer-events:none"'}>&#8595; ${r.reportText?'Export PDF':'PDF (generate first)'}</a>
       </div>
     </div>
     <div class="notice" style="margin-bottom:18px">&#128065; This is the AI-generated draft. Review each section below, then click <strong>Edit Report</strong> to make changes before generating the final PDF.</div>
@@ -868,7 +868,7 @@ app.get('/draft/:id', requireAuth, (req,res) => {
       <div class="page-title">Draft Report</div>
       <div style="display:flex;gap:8px">
         <a href="/edit/${r.id}" class="btn btn-ghost btn-sm">&larr; Back to Editor</a>
-        <a href="/download/${r.id}" class="btn btn-blk">&#8595; Export PDF</a>
+        <button onclick="exportPDF()" class="btn btn-blk">&#8595; Export PDF</button>
         <button onclick="approve('${r.id}')" class="btn btn-grn">&#10003; Approve</button>
       </div>
     </div>
@@ -888,22 +888,34 @@ app.get('/draft/:id', requireAuth, (req,res) => {
         </div>
         <div class="side-card">
           <h3>Status</h3>
-          <div class="status-badge">${r.status||'pending'}</div>
+          <div class="status-badge" id="badge">${r.status||'pending'}</div>
         </div>
         <div class="side-card">
           <h3>Actions</h3>
           <a href="/edit/${r.id}" class="btn btn-ghost btn-sm" style="width:100%;justify-content:center;margin-bottom:8px">Edit Sections</a>
-          <a href="/download/${r.id}" class="btn btn-blk btn-sm" style="width:100%;justify-content:center;margin-bottom:8px">&#8595; Export PDF</a>
+          <button onclick="exportPDF()" class="btn btn-blk btn-sm" style="width:100%;justify-content:center;margin-bottom:8px">&#8595; Export PDF</button>
           <button onclick="approve('${r.id}')" class="btn btn-grn btn-sm" style="width:100%;justify-content:center">&#10003; Approve Report</button>
         </div>
       </div>
     </div>
     <script>
+    const REPORT_TEXT=${JSON.stringify(r.reportText||'')};
+    const REPORT_ADDR=${JSON.stringify(r.address||'')};
+    const REPORT_ID=${JSON.stringify(r.id)};
+
+    async function exportPDF(){
+      if(!REPORT_TEXT){alert('No report text — go back to editor and click Generate Report first.');return;}
+      try{
+        const res=await fetch('/api/pdf',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({reportText:REPORT_TEXT,photos:[],address:REPORT_ADDR})});
+        if(!res.ok)throw new Error('PDF failed');
+        const blob=await res.blob(),url=URL.createObjectURL(blob),a=document.createElement('a');
+        a.href=url;a.download='Report_'+REPORT_ADDR.replace(/[^a-zA-Z0-9]+/g,'_')+'.pdf';a.click();URL.revokeObjectURL(url);
+      }catch(e){alert('Error: '+e.message);}
+    }
+
     async function approve(id){
       await fetch('/api/status/'+id,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({status:'approved'})});
-      document.querySelector('.status-badge').textContent='approved';
-      document.querySelector('.status-badge').style.background='#E8F5E9';
-      document.querySelector('.status-badge').style.color='#4CAF50';
+      const b=document.getElementById('badge');b.textContent='approved';b.style.background='#E8F5E9';b.style.color='#4CAF50';
     }
     </script>
   `));
