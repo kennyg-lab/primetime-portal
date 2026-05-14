@@ -222,12 +222,134 @@ app.get('/upload', requireAuth, (req, res) => {
         const res=await fetch('/api/extract',{method:'POST',body:fd});
         const json=await res.json();
         if(!json.ok)throw new Error(json.error);
-        st.innerHTML='<span style="color:#4CAF50;font-weight:600">&#10003; Done! Opening editor...</span>';
-        // POST the text fields to a temp store, then open editor
-        window.location.href='/edit/'+json.reportId;
+        st.innerHTML='<span style="color:#4CAF50;font-weight:600">&#10003; Done! '+json.photosFound+' photos extracted — preparing report...</span>';
+        setTimeout(()=>window.location.href='/review/'+json.reportId,800);
       }catch(e){st.innerHTML='<span style="color:#E53935">&#10005; '+e.message+'</span>';gb.style.display='block';}
     }
     </script>`));
+});
+
+// ── Review Page — full written report after upload ────────────────────────────
+app.get('/review/:id', requireAuth, (req,res) => {
+  readDB();
+  const r = DB.reports.find(r=>r.id===req.params.id)
+    || (req.session.lastReport?.id===req.params.id ? req.session.lastReport : null);
+  if (!r) return res.redirect('/');
+
+  const esc = s => (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+
+  res.send(shell('Report Review', 'dash', `
+    <style>
+    .review-wrap{display:grid;grid-template-columns:1fr 240px;gap:24px;align-items:start}
+    .review-body{background:#fff;border:1px solid var(--bdr);border-radius:4px;overflow:hidden}
+    .review-hd{background:#111;padding:22px 28px;border-bottom:3px solid #FFE600}
+    .review-hd h1{font-family:'Barlow Condensed',sans-serif;font-weight:900;font-size:20px;text-transform:uppercase;letter-spacing:.06em;color:#fff;margin-bottom:4px}
+    .review-hd p{font-size:12px;color:#888}
+    .review-section{padding:20px 28px;border-bottom:1px solid #F0F0F0}
+    .review-section:last-child{border-bottom:none}
+    .review-section h2{font-family:'Barlow Condensed',sans-serif;font-weight:700;font-size:13px;text-transform:uppercase;letter-spacing:.08em;color:#FFE600;background:#111;display:inline-block;padding:3px 10px;border-radius:2px;margin-bottom:10px}
+    .review-section p{font-size:13px;line-height:1.85;color:#333;margin-bottom:6px}
+    .review-section .meta-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px 20px}
+    .review-section .meta-item{font-size:12px;color:#555}
+    .review-section .meta-item strong{color:#111;font-weight:600;display:block;font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:#999;margin-bottom:1px}
+    .side-panel{position:sticky;top:80px;display:flex;flex-direction:column;gap:10px}
+    .side-card{background:#F8F8F8;border:1px solid var(--bdr);border-radius:4px;padding:16px}
+    .side-card h3{font-family:'Barlow Condensed',sans-serif;font-weight:700;font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:#999;margin-bottom:10px}
+    .notice{background:#FFF8E1;border:1px solid #FFE082;border-radius:4px;padding:12px 14px;font-size:12px;color:#795548;line-height:1.6}
+    </style>
+    <div class="page-hd">
+      <div class="page-title">Report Review</div>
+      <div style="display:flex;gap:8px">
+        <a href="/edit/${r.id}" class="btn btn-y">&#9998; Edit Report</a>
+        <a href="/download/${r.id}" class="btn btn-ghost btn-sm" style="opacity:.4;pointer-events:none">&#8595; PDF (generate first)</a>
+      </div>
+    </div>
+    <div class="notice" style="margin-bottom:18px">&#128065; This is the AI-generated draft. Review each section below, then click <strong>Edit Report</strong> to make changes before generating the final PDF.</div>
+    <div class="review-wrap">
+      <div class="review-body">
+        <div class="review-hd">
+          <h1>Insurance Inspection Report</h1>
+          <p>Prime Time Electricians &nbsp;|&nbsp; Draft for Review</p>
+        </div>
+
+        <div class="review-section">
+          <h2>01 — Site &amp; Inspection Details</h2>
+          <div class="meta-grid">
+            <div class="meta-item"><strong>Property Address</strong>${esc(r.address)||'—'}</div>
+            <div class="meta-item"><strong>Inspection Date</strong>${esc(r.inspDate)||'—'}</div>
+            <div class="meta-item"><strong>Inspection Time</strong>${esc(r.inspTime)||'—'}</div>
+            <div class="meta-item"><strong>Insured</strong>${esc(r.insured)||'—'}</div>
+            <div class="meta-item"><strong>Technician</strong>${esc(r.tech)||'—'}</div>
+            <div class="meta-item"><strong>Year Built</strong>${esc(r.yearBuilt)||'—'}</div>
+            <div class="meta-item"><strong>Roof Type</strong>${esc(r.roofType)||'—'}</div>
+            <div class="meta-item"><strong>Date of Loss</strong>${esc(r.ownerDate)||'—'}</div>
+          </div>
+        </div>
+
+        <div class="review-section">
+          <h2>02 — Item Inspected</h2>
+          <div class="meta-grid">
+            <div class="meta-item"><strong>Item</strong>${esc(r.item)||'—'}</div>
+            <div class="meta-item"><strong>Make &amp; Model</strong>${esc(r.model)||'—'}</div>
+            <div class="meta-item"><strong>Approximate Age</strong>${esc(r.age)||'—'}</div>
+            <div class="meta-item"><strong>Cable Size</strong>${esc(r.cable)||'—'}</div>
+            <div class="meta-item"><strong>Voltage</strong>${esc(r.voltage)||'—'}</div>
+            <div class="meta-item"><strong>Cutout</strong>${esc(r.cutout)||'—'}</div>
+            <div class="meta-item"><strong>Cause of Damage</strong>${esc(r.causeS)||'—'}</div>
+            <div class="meta-item"><strong>Wear &amp; Tear</strong>${esc(r.wearTear)||'—'}</div>
+          </div>
+        </div>
+
+        <div class="review-section">
+          <h2>03 — Inspection Findings</h2>
+          <p>${esc(r.findings)||'<em style="color:#bbb">Not yet written — click Edit Report then Write Sections</em>'}</p>
+        </div>
+
+        <div class="review-section">
+          <h2>04 — Cause of Damage</h2>
+          <p>${esc(r.causeD)||'<em style="color:#bbb">Not yet written — click Edit Report then Write Sections</em>'}</p>
+        </div>
+
+        <div class="review-section">
+          <h2>05 — Repair Recommendation</h2>
+          <p>${esc(r.rec)||'<em style="color:#bbb">Not yet written</em>'}</p>
+          ${r.repair ? `<p>${esc(r.repair)}</p>` : ''}
+        </div>
+
+        <div class="review-section">
+          <h2>06 — Summary</h2>
+          <p>${esc(r.summary)||'<em style="color:#bbb">Not yet written</em>'}</p>
+        </div>
+
+        <div class="review-section">
+          <h2>07 — Site Photographs</h2>
+          <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:4px">
+            ${(r.photos||[]).filter(p=>p.data).slice(0,9).map(p=>`
+              <div style="border-radius:3px;overflow:hidden;aspect-ratio:4/3;background:#F8F8F8">
+                <img src="${p.data}" style="width:100%;height:100%;object-fit:cover">
+                <div style="font-size:10px;color:#888;padding:3px 6px;text-align:center">${esc(p.caption)}</div>
+              </div>`).join('')}
+          </div>
+        </div>
+      </div>
+
+      <div class="side-panel">
+        <div class="side-card">
+          <h3>Status</h3>
+          <span style="background:#FFF8E1;color:#F59E0B;font-size:10px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;padding:4px 10px;border-radius:2px">Draft</span>
+        </div>
+        <div class="side-card">
+          <h3>Next Steps</h3>
+          <a href="/edit/${r.id}" class="btn btn-y btn-sm" style="width:100%;justify-content:center;margin-bottom:8px">&#9998; Edit Report</a>
+          <a href="/" class="btn btn-ghost btn-sm" style="width:100%;justify-content:center">&#8592; Dashboard</a>
+        </div>
+        <div class="side-card" style="font-size:12px;color:#888;line-height:1.65">
+          <h3>About this draft</h3>
+          Review the AI-written sections above. Click <strong>Edit Report</strong> to refine the wording, add details or adjust any section before generating the final PDF.
+        </div>
+      </div>
+    </div>
+  `));
 });
 
 // ── Editor ────────────────────────────────────────────────────────────────────
