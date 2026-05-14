@@ -639,15 +639,32 @@ function buildEditor(reportId, data) {
 // ── Extract PDF ───────────────────────────────────────────────────────────────
 app.post('/api/extract', requireAuth, upload.single('pdf'), async (req, res) => {
   try {
-    const pdfData = await pdfParse(req.file.buffer);
-    const fullText = pdfData.text.substring(0, 12000);
+    const pdfBase64 = req.file.buffer.toString('base64');
 
-    const extractPrompt = `Extract data fields from this iAudit PDF. Return ONLY valid JSON, no markdown.
+    // Send PDF directly to Claude to read natively
+    let data = {};
+    try {
+      const apiRes = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': ANTHROPIC_KEY,
+          'anthropic-version': '2023-06-01'
+        },
+        body: JSON.stringify({
+          model: 'claude-sonnet-4-20250514',
+          max_tokens: 3000,
+          messages: [{
+            role: 'user',
+            content: [
+              {
+                type: 'document',
+                source: { type: 'base64', media_type: 'application/pdf', data: pdfBase64 }
+              },
+              {
+                type: 'text',
+                text: `You are processing an iAudit insurance inspection report for Prime Time Electricians. Read this PDF carefully and return ONLY valid JSON — no markdown, no explanation.
 
-PDF TEXT:
-${fullText}
-
-Return ONLY this JSON:
 {
   "address": "full site address",
   "inspDate": "inspection date e.g. 8 May 2026",
@@ -657,7 +674,7 @@ Return ONLY this JSON:
   "tech": "technician name from Tech Signature",
   "item": "item name inspected",
   "model": "make and model",
-  "age": "approximate age of item",
+  "age": "approximate age",
   "fault": "fault codes or empty string",
   "cable": "circuit cable size",
   "voltage": "voltage reading",
@@ -665,22 +682,32 @@ Return ONLY this JSON:
   "ownerDate": "date of loss or incident",
   "causeS": "cause of damage short phrase",
   "wearTear": "No or Yes or N/A",
-  "yearBuilt": "year property was built",
+  "yearBuilt": "year property built",
   "roofType": "roof type",
-  "damageDetails": "copy the full Details of damage text verbatim from the report"
-}`;
-
-    let data = {};
-    try {
-      const text = await callClaude([{role:'user',content:extractPrompt}], 1500);
-      console.log('Extract response:', text.substring(0,300));
+  "damageDetails": "verbatim text from Details of damage field",
+  "findings": "Write 3-4 professional sentences: property description, what was inspected, condition found, measurements taken",
+  "causeD": "Write 3-4 professional sentences: exactly how damage occurred using the Details of damage notes, what failed, why unsafe",
+  "rec": "Write 1-2 sentences: recommend full replacement or repair and why",
+  "repair": "Write 1 sentence: specifically what work must be carried out",
+  "summary": "Write 3-4 sentences: standalone executive summary of property, item, cause and outcome"
+}`
+              }
+            ]
+          }]
+        })
+      });
+      const apiJson = await apiRes.json();
+      const text = apiJson.content?.[0]?.text || '';
+      console.log('Claude PDF read (400):', text.substring(0, 400));
       const m = text.match(/\{[\s\S]*\}/);
       if (m) {
         data = JSON.parse(m[0]);
-        console.log('Extracted OK — address:', data.address, '| cause:', data.causeS);
+        console.log('Extracted OK — address:', data.address, '| findings length:', data.findings?.length);
+      } else {
+        console.error('No JSON in response');
       }
     } catch(e) {
-      console.error('Extract failed:', e.message);
+      console.error('PDF read failed:', e.message);
     }
 
     // Extract photos
@@ -721,47 +748,11 @@ Return ONLY this JSON:
     // Pad to 9
     while (photos.length<9) photos.push({data:null,caption:'Photo '+(photos.length+1),rotation:0});
 
-    // Write narrative sections
-    let narrative = {};
-    try {
-      const narrativePrompt = `You are writing a professional insurance inspection report for Prime Time Electricians.
-
-Write five narrative sections using the job data below. Use specific details — actual names, measurements and cause.
-
-JOB DATA:
-- Property: ${data.address||'not recorded'} (built ${data.yearBuilt||'unknown'}, ${data.roofType||'unknown'} roof)
-- Inspection: ${data.inspDate||''} at ${data.inspTime||''}
-- Insured: ${data.insured||'not recorded'}
-- Technician: ${data.tech||'not recorded'}
-- Item: ${data.item||'not recorded'} (${data.model||'unknown make'}, approx ${data.age||'unknown'} age)
-- Cable size: ${data.cable||'not recorded'}
-- Voltage: ${data.voltage||'not recorded'}
-- Cutout: ${data.cutout||'not recorded'}
-- Cause: ${data.causeS||'not recorded'}
-- Wear and tear unrelated: ${data.wearTear||'No'}
-- Owner reported date: ${data.ownerDate||'not recorded'}
-- Technician damage notes: ${data.damageDetails||'none provided'}
-
-Return ONLY this JSON — no markdown:
-{
-  "findings": "3-4 sentences describing the property, what was inspected, condition found and measurements taken.",
-  "causeD": "3-4 sentences explaining exactly how damage occurred, what failed and why unsafe.",
-  "rec": "1-2 sentences recommending replacement or repair and why.",
-  "repair": "1 sentence stating specifically what work must be done.",
-  "summary": "3-4 sentences executive summary of property, item, cause and outcome."
-}`;
-      const ntext = await callClaude([{role:'user',content:narrativePrompt}], 2000);
-      console.log('Narrative:', ntext.substring(0,200));
-      const nm = ntext.match(/\{[\s\S]*\}/);
-      if (nm) { narrative = JSON.parse(nm[0]); console.log('Narrative OK, findings length:', narrative.findings?.length); }
-    } catch(e) { console.error('Narrative failed:', e.message); }
-
     const report = {
       id: uuid(),
       createdAt: new Date().toISOString(),
       status: 'pending',
       ...data,
-      ...narrative,
       photos,
       reportText: ''
     };
