@@ -283,6 +283,7 @@ app.get('/edit/:id', requireAuth, (req,res) => {
   readDB();
   let r = DB.reports.find(r=>r.id===req.params.id);
   if (!r && req.session.lastReport?.id===req.params.id) r=req.session.lastReport;
+  console.log('Edit page — id:', req.params.id, '| found:', !!r, '| findings:', r?.findings?.substring(0,50)||'NONE');
   res.send(buildEditor(req.params.id, r||{}));
 });
 
@@ -636,7 +637,8 @@ Return ONLY this JSON — no markdown:
     DB.reports.push(report);
     writeDB();
     req.session.lastReport = report;
-    req.session.save();
+    await new Promise(resolve => req.session.save(resolve));
+    console.log('Report saved — id:', report.id, '| findings:', report.findings?.substring(0,60)||'NONE');
 
     res.json({ok:true, reportId:report.id, photosFound:rawPhotos.length});
 
