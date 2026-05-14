@@ -664,33 +664,45 @@ app.post('/api/extract', requireAuth, upload.single('pdf'), async (req, res) => 
               },
               {
                 type: 'text',
-                text: `You are processing an iAudit insurance inspection report for Prime Time Electricians. Read this PDF carefully and return ONLY valid JSON — no markdown, no explanation.
+                text: `You are processing an iAudit insurance inspection report for Prime Time Electricians.
+
+IMPORTANT: This PDF has a table format with LABELS on the left and VALUES on the right. You must extract the VALUES not the labels.
+
+For example:
+- "Site Address" is a LABEL — extract the address value next to it
+- "Full Name of Person you met with" is a LABEL — extract the person's name
+- "Item name" is a LABEL — extract the actual item name like "Switchboard RCBOs" or "Consumer & sub mains"
+- "Make and Model" is a LABEL — extract the actual brand/model value
+- "Damage is the Caused By ?" is a LABEL — extract the cause like "Water Ingress" or "Storm Surge"
+- "Details of damage" is a LABEL — extract the paragraph of text below it
+
+Read this PDF carefully and return ONLY valid JSON — no markdown, no explanation:
 
 {
-  "address": "full site address",
-  "inspDate": "inspection date e.g. 8 May 2026",
-  "inspTime": "inspection time e.g. 10:59 AWST",
+  "address": "the actual street address value",
+  "inspDate": "the actual date value e.g. 8 May 2026",
+  "inspTime": "the actual time value e.g. 10:59 AWST",
   "rptDate": "same as inspDate",
-  "insured": "full name of person met with",
-  "tech": "technician name from Tech Signature",
-  "item": "item name inspected",
-  "model": "make and model",
-  "age": "approximate age",
-  "fault": "fault codes or empty string",
-  "cable": "circuit cable size",
-  "voltage": "voltage reading",
-  "cutout": "measurements of cut out",
-  "ownerDate": "date of loss or incident",
-  "causeS": "cause of damage short phrase",
-  "wearTear": "No or Yes or N/A",
-  "yearBuilt": "year property built",
-  "roofType": "roof type",
-  "damageDetails": "verbatim text from Details of damage field",
-  "findings": "Write 3-4 professional sentences: property description, what was inspected, condition found, measurements taken",
-  "causeD": "Write 3-4 professional sentences: exactly how damage occurred using the Details of damage notes, what failed, why unsafe",
-  "rec": "Write 1-2 sentences: recommend full replacement or repair and why",
-  "repair": "Write 1 sentence: specifically what work must be carried out",
-  "summary": "Write 3-4 sentences on cause of damage and recommended outcome only. Do NOT repeat the property address or year built."
+  "insured": "the actual name of the person met with",
+  "tech": "the actual technician name from Tech Signature",
+  "item": "the actual item name value e.g. Switchboard RCBOs or Consumer & sub mains",
+  "model": "the actual make and model value",
+  "age": "the actual approximate age value",
+  "fault": "the actual fault codes value or empty string",
+  "cable": "the actual circuit cable size value",
+  "voltage": "the actual voltage reading value",
+  "cutout": "the actual measurements value",
+  "ownerDate": "the actual date of loss value",
+  "causeS": "the actual cause of damage value e.g. Water Ingress or Storm Surge",
+  "wearTear": "the actual Yes or No or N/A value",
+  "yearBuilt": "the actual year built value",
+  "roofType": "the actual roof type value",
+  "damageDetails": "the full text paragraph from the Details of damage field",
+  "findings": "Write 3-4 professional sentences: describe the property, what was inspected, condition found and measurements taken on site",
+  "causeD": "Write 3-4 professional sentences: use the Details of damage text to explain exactly how the damage occurred, what failed and why it is unsafe",
+  "rec": "Write 1-2 sentences: clearly recommend full replacement or repair and state why",
+  "repair": "Write 1 sentence: state specifically what work must be carried out",
+  "summary": "Write 3-4 sentences covering the item inspected, cause of damage and recommended outcome. Do NOT repeat the property address or year built."
 }`
               }
             ]
