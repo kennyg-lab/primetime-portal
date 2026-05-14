@@ -476,20 +476,28 @@ function buildEditor(reportId, data) {
 
     async function writeSections(){
       const d=collect(),btn=document.getElementById('writeBtn'),st=document.getElementById('st');
-      btn.textContent='Writing...';st.className='st on';st.textContent='Claude is writing the report sections...';
+      btn.textContent='Writing...';st.className='st on';st.textContent='Claude is writing the report sections — please wait...';
       try{
-        const res=await fetch('/api/write-sections',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(d)});
+        // Load full report data from server to get all extracted fields
+        let fullData=d;
+        if(REPORT_ID){
+          try{
+            const rr=await fetch('/api/report/'+REPORT_ID);
+            if(rr.ok){const rd=await rr.json();if(rd)fullData={...rd,...d};}
+          }catch(e){}
+        }
+        const res=await fetch('/api/write-sections',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(fullData)});
         const json=await res.json();
         if(!json.ok)throw new Error(json.error);
-        if(json.findings)document.getElementById('findTxt').value=json.findings;
-        if(json.causeD)document.getElementById('causeD').value=json.causeD;
-        if(json.rec)document.getElementById('recTxt').value=json.rec;
-        if(json.repair)document.getElementById('repTxt').value=json.repair;
-        if(json.summary)document.getElementById('sumTxt').value=json.summary;
-        st.className='st on ok';st.textContent='Sections written — review and edit, then Generate Report';
+        if(json.findings){document.getElementById('findTxt').value=json.findings;}
+        if(json.causeD){document.getElementById('causeD').value=json.causeD;}
+        if(json.rec){document.getElementById('recTxt').value=json.rec;}
+        if(json.repair){document.getElementById('repTxt').value=json.repair;}
+        if(json.summary){document.getElementById('sumTxt').value=json.summary;}
+        st.className='st on ok';st.textContent='Done — review each section then click Generate Report';
         saveDraft(true);
       }catch(e){st.className='st on err';st.textContent='Error: '+e.message;}
-      btn.textContent='Write Sections';
+      btn.textContent='\u9998 Write Sections';
     }
 
     document.getElementById('writeBtn').onclick=writeSections;
