@@ -49,7 +49,7 @@ async function callClaude(messages, maxTokens=1500) {
   const res = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: { 'Content-Type':'application/json', 'x-api-key':ANTHROPIC_KEY, 'anthropic-version':'2023-06-01' },
-    body: JSON.stringify({ model:'claude-sonnet-4-20250514', max_tokens:maxTokens, messages })
+    body: JSON.stringify({ model:'claude-sonnet-4-5', max_tokens:maxTokens, messages })
   });
   const json = await res.json();
   if (!res.ok) throw new Error(json.error?.message||'API error');
@@ -652,7 +652,7 @@ app.post('/api/extract', requireAuth, upload.single('pdf'), async (req, res) => 
           'anthropic-version': '2023-06-01'
         },
         body: JSON.stringify({
-          model: 'claude-sonnet-4-20250514',
+          model: 'claude-sonnet-4-5',
           max_tokens: 3000,
           messages: [{
             role: 'user',
