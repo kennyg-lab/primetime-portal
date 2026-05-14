@@ -633,7 +633,17 @@ function buildEditor(reportId, data) {
     document.getElementById('sSave').onclick=e=>{e.preventDefault();saveDraft(false);};
     document.getElementById('sPDF').onclick=e=>{e.preventDefault();exportPDF();};
 
-    buildPhotos();
+    // Load photos from API
+    if(REPORT_ID){
+      fetch('/api/report/'+REPORT_ID).then(r=>r.ok?r.json():null).then(data=>{
+        if(data&&data.photos){
+          data.photos.forEach((p,i)=>{if(p&&p.data){photoData[i]=p.data;photoCaptions[i]=p.caption||LABELS[i];}});
+          buildPhotos();
+        }
+      }).catch(()=>{});
+    } else {
+      buildPhotos();
+    }
     </script>`);
 }
 
@@ -921,11 +931,12 @@ app.get('/draft/:id', requireAuth, (req,res) => {
     const REPORT_TEXT=${JSON.stringify(r.reportText||'')};
     const REPORT_ADDR=${JSON.stringify(r.address||'')};
     const REPORT_ID=${JSON.stringify(r.id)};
+    const REPORT_PHOTOS=${JSON.stringify((r.photos||[]).map(p=>({data:p.data||null,caption:p.caption||''})))};
 
     async function exportPDF(){
       if(!REPORT_TEXT){alert('No report text — go back to editor and click Generate Report first.');return;}
       try{
-        const res=await fetch('/api/pdf',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({reportText:REPORT_TEXT,photos:[],address:REPORT_ADDR})});
+        const res=await fetch('/api/pdf',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({reportText:REPORT_TEXT,photos:REPORT_PHOTOS,address:REPORT_ADDR})});
         if(!res.ok)throw new Error('PDF failed');
         const blob=await res.blob(),url=URL.createObjectURL(blob),a=document.createElement('a');
         a.href=url;a.download='Report_'+REPORT_ADDR.replace(/[^a-zA-Z0-9]+/g,'_')+'.pdf';a.click();URL.revokeObjectURL(url);
