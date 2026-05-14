@@ -982,61 +982,88 @@ app.post('/api/pdf', requireAuth, (req,res) => buildPDF(req,res));
 
 function buildPDF(req,res) {
   const {reportText,photos,address}=req.body;
+  if (!reportText) return res.status(400).json({ok:false,error:'No report text'});
   try {
     const doc=new PDFDocument({size:'A4',margins:{top:115,bottom:90,left:57,right:57},autoFirstPage:false});
     const chunks=[];
     doc.on('data',c=>chunks.push(c));
-    const hBuf=fs.readFileSync(HEADER_IMG);
-    const fBuf=fs.readFileSync(FOOTER_IMG);
-    const pItems=(photos||[]).map(p=>({buf:p.data?Buffer.from(p.data.split(',')[1],'base64'):null,caption:p.caption}));
+    doc.on('end',()=>{
+      const fname='Report_'+(address||'Report').replace(/[^a-zA-Z0-9]+/g,'_')+'.pdf';
+      res.setHeader('Content-Type','application/pdf');
+      res.setHeader('Content-Disposition','attachment; filename="'+fname+'"');
+      res.send(Buffer.concat(chunks));
+    });
+
+    // Load header/footer images safely
+    let hBuf=null, fBuf=null;
+    try { hBuf=fs.readFileSync(HEADER_IMG); } catch(e) { console.log('Header image missing'); }
+    try { fBuf=fs.readFileSync(FOOTER_IMG); } catch(e) { console.log('Footer image missing'); }
+
+    const pItems=(photos||[]).map(p=>({buf:p.data?Buffer.from(p.data.split(',')[1],'base64'):null,caption:p.caption||''}));
+
     function addPage(){
-      doc.addPage();const pw=doc.page.width;
-      doc.image(hBuf,0,0,{width:pw,height:pw*(350/2068)});
-      const fH=46,fW=fH*(792/438);
-      doc.image(fBuf,57,doc.page.height-68,{width:fW,height:fH});
+      doc.addPage();
+      const pw=doc.page.width;
+      if (hBuf) {
+        try { doc.image(hBuf,0,0,{width:pw,height:pw*(350/2068)}); } catch(e){}
+      } else {
+        // Fallback header if image missing
+        doc.rect(0,0,pw,80).fill('#111111');
+        doc.fontSize(18).fillColor('#FFE600').font('Helvetica-Bold')
+          .text('PRIME TIME ELECTRICIANS',40,25,{width:pw-80});
+        doc.fontSize(10).fillColor('#888888').font('Helvetica')
+          .text('Insurance Inspection Report',40,52,{width:pw-80});
+      }
+      if (fBuf) {
+        const fH=46,fW=fH*(792/438);
+        try { doc.image(fBuf,57,doc.page.height-68,{width:fW,height:fH}); } catch(e){}
+      }
       doc.fontSize(7.5).fillColor('#888888')
         .text('Confidential — Prepared for Insurance Purposes Only',0,doc.page.height-52,{align:'right',width:pw-57})
         .text('Prime Time Electricians  |  ABN 88 151 349 012  |  EC 9142  |  Page '+doc.bufferedPageRange().count,0,doc.page.height-40,{align:'right',width:pw-57});
     }
+
     const sections=[];let cur=null;
-    for (const line of reportText.split('\n')) {
-      if (line.startsWith('## ')) {if(cur)sections.push(cur);cur={title:line.replace(/^## \d+\.\s*/,'').replace('## ','').trim().toUpperCase(),paras:[]};}
+    for (const line of (reportText||'').split('\n')) {
+      if (line.startsWith('## ')){if(cur)sections.push(cur);cur={title:line.replace(/^## \d+\.\s*/,'').replace('## ','').trim().toUpperCase(),paras:[]};}
       else if (line.trim()&&cur) cur.paras.push(line.trim());
     }
     if (cur) sections.push(cur);
-    addPage();
-    for (const sec of sections) {
-      if (doc.y>doc.page.height-doc.page.margins.bottom-80) addPage();
-      doc.moveDown(0.6).fontSize(11).fillColor('#111').font('Helvetica-Bold').text(sec.title);
-      doc.moveDown(0.3);
-      for (const para of sec.paras) {
-        if (doc.y>doc.page.height-doc.page.margins.bottom-60) addPage();
-        doc.fontSize(10).fillColor('#333').font('Helvetica').text(para,{lineGap:3}).moveDown(0.4);
-      }
-      if (sec.title==='SITE PHOTOGRAPHS') {
-        const valid=pItems.filter(p=>p.buf);if(!valid.length)continue;
-        doc.moveDown(0.4);
-        const pw=doc.page.width-doc.page.margins.left-doc.page.margins.right;
-        const cols=3,gap=8,imgW=(pw-gap*(cols-1))/cols,imgH=imgW*0.75,rowH=imgH+20+gap;
-        let col=0,rowY=doc.y;
-        for (const {buf,caption} of valid) {
-          if (rowY+rowH>doc.page.height-doc.page.margins.bottom){addPage();rowY=doc.y;}
-          const x=doc.page.margins.left+col*(imgW+gap);
-          try{doc.image(buf,x,rowY,{width:imgW,height:imgH,cover:[imgW,imgH]});}catch(e){}
-          doc.fontSize(7.5).fillColor('#888').font('Helvetica').text(caption,x,rowY+imgH+3,{width:imgW,align:'center'});
-          col++;if(col>=cols){col=0;rowY+=rowH;}
+
+    // If no sections parsed, just dump the text
+    if (sections.length===0) {
+      addPage();
+      doc.fontSize(10).fillColor('#333').font('Helvetica').text(reportText,{lineGap:3});
+    } else {
+      addPage();
+      for (const sec of sections) {
+        if (doc.y>doc.page.height-doc.page.margins.bottom-80) addPage();
+        doc.moveDown(0.6).fontSize(11).fillColor('#111').font('Helvetica-Bold').text(sec.title);
+        doc.moveDown(0.3);
+        for (const para of sec.paras) {
+          if (doc.y>doc.page.height-doc.page.margins.bottom-60) addPage();
+          doc.fontSize(10).fillColor('#333').font('Helvetica').text(para,{lineGap:3}).moveDown(0.4);
+        }
+        if (sec.title==='SITE PHOTOGRAPHS') {
+          const valid=pItems.filter(p=>p.buf);if(!valid.length)continue;
+          doc.moveDown(0.4);
+          const pw=doc.page.width-doc.page.margins.left-doc.page.margins.right;
+          const cols=3,gap=8,imgW=(pw-gap*(cols-1))/cols,imgH=imgW*0.75,rowH=imgH+20+gap;
+          let col=0,rowY=doc.y;
+          for (const {buf,caption} of valid) {
+            if (rowY+rowH>doc.page.height-doc.page.margins.bottom){addPage();rowY=doc.y;}
+            const x=doc.page.margins.left+col*(imgW+gap);
+            try{doc.image(buf,x,rowY,{width:imgW,height:imgH,cover:[imgW,imgH]});}catch(e){}
+            doc.fontSize(7.5).fillColor('#888').font('Helvetica').text(caption,x,rowY+imgH+3,{width:imgW,align:'center'});
+            col++;if(col>=cols){col=0;rowY+=rowH;}
+          }
         }
       }
     }
     doc.end();
-    doc.on('end',()=>{
-      res.setHeader('Content-Type','application/pdf');
-      res.setHeader('Content-Disposition','attachment; filename="Report_'+(address||'Report').replace(/[^a-zA-Z0-9]+/g,'_')+'.pdf"');
-      res.send(Buffer.concat(chunks));
-    });
   } catch(e) {
     console.error('PDF error:',e);
-    res.status(500).json({ok:false,error:e.message});
+    if (!res.headersSent) res.status(500).json({ok:false,error:e.message});
   }
 }
 
