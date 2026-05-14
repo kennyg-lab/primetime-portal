@@ -628,6 +628,7 @@ function buildEditor(reportId, data) {
     document.getElementById('writeBtn').onclick=writeSections;
     document.getElementById('pdfBtn').onclick=exportPDF;
     document.getElementById('saveBtn').onclick=()=>saveDraft(false);
+    document.getElementById('genBtn').onclick=generate;
     document.getElementById('sGen').onclick=e=>{e.preventDefault();generate();};
     document.getElementById('sSave').onclick=e=>{e.preventDefault();saveDraft(false);};
     document.getElementById('sPDF').onclick=e=>{e.preventDefault();exportPDF();};
