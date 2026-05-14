@@ -689,7 +689,7 @@ app.post('/api/extract', requireAuth, upload.single('pdf'), async (req, res) => 
   "causeD": "Write 3-4 professional sentences: exactly how damage occurred using the Details of damage notes, what failed, why unsafe",
   "rec": "Write 1-2 sentences: recommend full replacement or repair and why",
   "repair": "Write 1 sentence: specifically what work must be carried out",
-  "summary": "Write 3-4 sentences: standalone executive summary of property, item, cause and outcome"
+  "summary": "Write 3-4 sentences on cause of damage and recommended outcome only. Do NOT repeat the property address or year built."
 }`
               }
             ]
@@ -817,6 +817,12 @@ app.post('/api/generate', requireAuth, async (req,res) => {
   const d=req.body;
   const cause=[d.causeS,d.causeD].filter(v=>!isNA(v)).join(' — ');
   const prompt=`Write a professional insurance inspection report for Prime Time Electricians. Formal prose, ## headings only.
+
+RULES:
+- Do NOT repeat the property address or year built in the Summary section — those details belong in Site & Inspection Details only
+- Do NOT repeat the item age in the Summary — that belongs in Item Inspected only
+- Each section should only contain information relevant to that section
+- Write in formal third-person prose
 
 SITE: ${d.address} | ${d.inspDate} ${d.inspTime||''} | Insured: ${d.insured||''} | Tech: ${d.tech||''}
 ITEM: ${[fl('Item',d.item),fl('Model',d.model),fl('Age',d.age),fl('Cable',d.cable),fl('Fault',d.fault)].filter(Boolean).join(', ')||'Not provided'}
@@ -948,7 +954,7 @@ Return ONLY this JSON — no markdown, no preamble:
   "causeD": "3-4 sentences: explain exactly how the damage occurred using all available notes, what components failed and why the item is unsafe to continue operating.",
   "rec": "1-2 sentences: clearly recommend full replacement or repair and state why.",
   "repair": "1 sentence: state specifically what work must be carried out.",
-  "summary": "3-4 sentences: standalone executive summary covering property, item inspected, cause of damage and recommended outcome."
+  "summary": "3-4 sentences covering the item inspected, cause of damage and recommended outcome. Do NOT repeat the property address or year built."
 }`;
 
   try {
