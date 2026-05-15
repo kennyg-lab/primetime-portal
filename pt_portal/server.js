@@ -1008,7 +1008,7 @@ function buildPDF(req,res) {
   const {reportText,photos,address}=req.body;
   if (!reportText) return res.status(400).json({ok:false,error:'No report text'});
   try {
-    const doc=new PDFDocument({size:'A4',margins:{top:115,bottom:90,left:57,right:57},autoFirstPage:false});
+    const doc=new PDFDocument({size:'A4',margins:{top:130,bottom:90,left:57,right:57},autoFirstPage:false});
     const chunks=[];
     doc.on('data',c=>chunks.push(c));
     doc.on('end',()=>{
@@ -1028,23 +1028,30 @@ function buildPDF(req,res) {
     function addPage(){
       doc.addPage();
       const pw=doc.page.width;
+      const ph=doc.page.height;
       if (hBuf) {
-        try { doc.image(hBuf,0,0,{width:pw,height:pw*(350/2068)}); } catch(e){}
+        try {
+          const hh=pw*(350/2068);
+          doc.image(hBuf,0,0,{width:pw,height:hh});
+          doc.y=hh+10;
+        } catch(e){ doc.y=60; }
       } else {
-        // Fallback header if image missing
-        doc.rect(0,0,pw,80).fill('#111111');
-        doc.fontSize(18).fillColor('#FFE600').font('Helvetica-Bold')
-          .text('PRIME TIME ELECTRICIANS',40,25,{width:pw-80});
-        doc.fontSize(10).fillColor('#888888').font('Helvetica')
-          .text('Insurance Inspection Report',40,52,{width:pw-80});
+        // Fallback text header
+        doc.save();
+        doc.rect(0,0,pw,75).fill('#111111');
+        doc.fontSize(20).fillColor('#FFE600').font('Helvetica-Bold').text('PRIME TIME ELECTRICIANS',40,18,{width:pw-80});
+        doc.fontSize(10).fillColor('#ffffff').font('Helvetica').text('Insurance Inspection Report',40,48,{width:pw-80});
+        doc.restore();
+        doc.y=85;
       }
       if (fBuf) {
-        const fH=46,fW=fH*(792/438);
-        try { doc.image(fBuf,57,doc.page.height-68,{width:fW,height:fH}); } catch(e){}
+        try { const fH=46,fW=fH*(792/438); doc.image(fBuf,57,ph-68,{width:fW,height:fH}); } catch(e){}
       }
       doc.fontSize(7.5).fillColor('#888888')
-        .text('Confidential — Prepared for Insurance Purposes Only',0,doc.page.height-52,{align:'right',width:pw-57})
-        .text('Prime Time Electricians  |  ABN 88 151 349 012  |  EC 9142  |  Page '+doc.bufferedPageRange().count,0,doc.page.height-40,{align:'right',width:pw-57});
+        .text('Confidential — Prepared for Insurance Purposes Only',0,ph-52,{align:'right',width:pw-57})
+        .text('Prime Time Electricians  |  ABN 88 151 349 012  |  EC 9142  |  Page '+doc.bufferedPageRange().count,0,ph-40,{align:'right',width:pw-57});
+      // Reset position to content area
+      doc.x=57;
     }
 
     const sections=[];let cur=null;
