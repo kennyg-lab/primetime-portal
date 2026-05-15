@@ -577,7 +577,9 @@ function buildEditor(reportId, data) {
       try{
         const res=await fetch('/api/generate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(d)});
         const json=await res.json();if(!json.ok)throw new Error(json.error);
-        window._rt=json.text;
+        // Strip any "Prepared for/by" lines Claude adds
+        const cleaned=json.text.replace(/^\*?\*?Prepared (for|by):?.*$/gmi,'').replace(/^\*?\*?Client:?.*$/gmi,'').trim();
+        window._rt=cleaned;
         // Save then redirect to draft report page
         await saveDraft(true);
         window.location.href='/draft/'+REPORT_ID;
@@ -824,10 +826,11 @@ app.post('/api/generate', requireAuth, async (req,res) => {
   const prompt=`Write a professional insurance inspection report for Prime Time Electricians. Formal prose, ## headings only.
 
 RULES:
-- Do NOT repeat the property address or year built in the Summary section — those details belong in Site & Inspection Details only
-- Do NOT repeat the item age in the Summary — that belongs in Item Inspected only
-- Each section should only contain information relevant to that section
+- Do NOT include any "Prepared for:", "Prepared by:", "Client:", or similar header lines
+- Do NOT repeat the property address or year built in the Summary section
+- Do NOT repeat the item age in the Summary
 - Write in formal third-person prose
+- Start directly with ## 1. Site & Inspection Details
 
 SITE: ${d.address} | ${d.inspDate} ${d.inspTime||''} | Insured: ${d.insured||''} | Tech: ${d.tech||''}
 ITEM: ${[fl('Item',d.item),fl('Model',d.model),fl('Age',d.age),fl('Cable',d.cable),fl('Fault',d.fault)].filter(Boolean).join(', ')||'Not provided'}
@@ -1006,9 +1009,12 @@ function buildPDF(req, res) {
     try { hBuf = fs.readFileSync(HEADER_IMG); } catch(e) {}
     try { fBuf = fs.readFileSync(FOOTER_IMG); } catch(e) {}
     const hdrH = hBuf ? Math.round(PW * (350 / 2068)) : 75;
-    const CTOP = hdrH + 16, CBOT = PH - MB, CW = PW - ML - MR;
+    const CTOP = hdrH + 16;
+    const CBOT = PH - MB;
+    const CW = PW - ML - MR;
 
-    const doc = new PDFDocument({ size: 'A4', margins: { top: CTOP, bottom: MB, left: ML, right: MR }, autoFirstPage: false });
+    // Use minimal margins — we position everything manually
+    const doc = new PDFDocument({ size: 'A4', margin: 0, autoFirstPage: false });
     const chunks = [];
     doc.on('data', c => chunks.push(c));
     doc.on('end', () => {
@@ -1024,27 +1030,37 @@ function buildPDF(req, res) {
     }));
 
     function chrome() {
-      if (hBuf) { try { doc.image(hBuf, 0, 0, { width: PW, height: hdrH }); } catch(e) {} }
-      else {
+      // Header
+      if (hBuf) {
+        try { doc.image(hBuf, 0, 0, { width: PW, height: hdrH }); } catch(e) {}
+      } else {
         doc.rect(0, 0, PW, hdrH).fill('#111111');
         doc.fontSize(18).fillColor('#FFE600').font('Helvetica-Bold').text('PRIME TIME ELECTRICIANS', ML, 18, { width: CW });
         doc.fontSize(9).fillColor('#ffffff').font('Helvetica').text('Insurance Inspection Report', ML, 46, { width: CW });
       }
-      if (fBuf) { try { const fH = 40, fW = fH * (792 / 438); doc.image(fBuf, ML, PH - 65, { width: fW, height: fH }); } catch(e) {} }
+      // Footer
+      if (fBuf) {
+        try { const fH = 40, fW = fH * (792 / 438); doc.image(fBuf, ML, PH - 65, { width: fW, height: fH }); } catch(e) {}
+      }
       const pg = doc.bufferedPageRange().count;
       doc.fontSize(7).fillColor('#999999')
         .text('Confidential — Prepared for Insurance Purposes Only', 0, PH - 48, { align: 'right', width: PW - MR })
         .text('Prime Time Electricians  |  ABN 88 151 349 012  |  EC 9142  |  Page ' + pg, 0, PH - 36, { align: 'right', width: PW - MR });
+      // Reset cursor to content area
+      doc.x = ML;
+      doc.y = CTOP;
     }
 
-    function np() { doc.addPage(); chrome(); doc.x = ML; doc.y = CTOP; }
+    function np() { doc.addPage(); chrome(); }
     function chk(n) { if (doc.y + n > CBOT) np(); }
 
     function hd(t) {
-      chk(55); doc.moveDown(0.4);
+      chk(55);
+      doc.moveDown(0.3);
       doc.fontSize(10.5).fillColor('#111111').font('Helvetica-Bold').text(t, ML, doc.y, { width: CW });
       doc.moveTo(ML, doc.y + 2).lineTo(ML + CW, doc.y + 2).strokeColor('#FFE600').lineWidth(1.5).stroke();
-      doc.y = doc.y + 7; doc.x = ML;
+      doc.y = doc.y + 7;
+      doc.x = ML;
     }
 
     function bt(p) {
@@ -1053,32 +1069,50 @@ function buildPDF(req, res) {
       doc.moveDown(0.3);
     }
 
+    // Parse sections
     const secs = []; let cur = null;
     for (const line of (reportText || '').split('\n')) {
-      if (line.match(/^#{1,3} /)) { if (cur) secs.push(cur); cur = { title: line.replace(/^#{1,3} [\d.]*\s*/, '').trim().toUpperCase(), paras: [] }; }
-      else if (line.trim() && cur) cur.paras.push(line.trim());
+      if (line.match(/^#{1,3} /)) {
+        if (cur) secs.push(cur);
+        cur = { title: line.replace(/^#{1,3} [\d.]*\s*/, '').trim().toUpperCase(), paras: [] };
+      } else if (line.trim() && cur) {
+        cur.paras.push(line.trim());
+      }
     }
     if (cur) secs.push(cur);
 
+    // Start page 1 — content starts immediately after header
     np();
+
+    // Write text sections
     for (const sec of secs) {
       if (/PHOTO/i.test(sec.title)) continue;
       hd(sec.title);
       for (const p of sec.paras) bt(p);
     }
 
+    // Photos — 3 per row, proper landscape ratio, no distortion
     if (pItems.length > 0) {
-      chk(55); doc.moveDown(0.4); hd('SITE PHOTOGRAPHS');
-      const COLS = 3, GX = 12;
-      const IW = Math.floor((CW - GX * (COLS - 1)) / COLS);
-      const IH = Math.floor(IW * 0.72);
-      const RH = IH + 22;
-      let col = 0, ry = doc.y + 6;
+      chk(55);
+      doc.moveDown(0.3);
+      hd('SITE PHOTOGRAPHS');
+      const COLS = 3, GX = 10;
+      const IW = Math.floor((CW - GX * (COLS - 1)) / COLS); // ~156pt each
+      const IH = Math.round(IW * 0.67); // 3:2 landscape ratio
+      const CAP = 14;
+      const RH = IH + CAP + 10;
+      let col = 0, ry = doc.y + 4;
+
       for (const { buf, caption } of pItems) {
-        if (col === 0 && ry + RH > CBOT) { np(); ry = doc.y + 6; }
+        if (col === 0 && ry + RH > CBOT) { np(); ry = doc.y + 4; }
         const x = ML + col * (IW + GX);
-        try { doc.image(buf, x, ry, { width: IW, height: IH }); } catch(e) {}
-        doc.fontSize(7.5).fillColor('#444444').font('Helvetica').text(caption, x, ry + IH + 3, { width: IW, align: 'center', lineBreak: false });
+        // Use fit to preserve aspect ratio within the box
+        try { doc.image(buf, x, ry, { fit: [IW, IH], align: 'center', valign: 'center' }); } catch(e) {}
+        // Draw border around photo slot
+        doc.rect(x, ry, IW, IH).strokeColor('#EEEEEE').lineWidth(0.5).stroke();
+        // Caption below
+        doc.fontSize(7.5).fillColor('#444444').font('Helvetica')
+          .text(caption, x, ry + IH + 3, { width: IW, align: 'center', lineBreak: false });
         col++;
         if (col >= COLS) { col = 0; ry += RH; }
       }
