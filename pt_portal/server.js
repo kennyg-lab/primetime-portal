@@ -1008,7 +1008,7 @@ function buildPDF(req,res) {
   const {reportText,photos,address}=req.body;
   if (!reportText) return res.status(400).json({ok:false,error:'No report text'});
   try {
-    const doc=new PDFDocument({size:'A4',margins:{top:60,bottom:90,left:57,right:57},autoFirstPage:false});
+    const doc=new PDFDocument({size:'A4',margins:{top:60,bottom:100,left:57,right:57},autoFirstPage:false});
     const chunks=[];
     doc.on('data',c=>chunks.push(c));
     doc.on('end',()=>{
@@ -1023,99 +1023,133 @@ function buildPDF(req,res) {
     try { fBuf=fs.readFileSync(FOOTER_IMG); } catch(e) {}
 
     const pItems=(photos||[]).filter(p=>p&&p.data).map(p=>({
-      buf:Buffer.from(p.data.split(',')[1],'base64'),
-      caption:p.caption||''
+      buf: Buffer.from(p.data.split(',')[1],'base64'),
+      caption: p.caption||''
     }));
 
-    const pw=595.28; // A4 width in points
-    const ph=841.89; // A4 height in points
-    const marginL=57, marginR=57, marginB=90;
-    const headerH = hBuf ? pw*(350/2068) : 80;
-    const contentTop = headerH + 14;
-    const contentBottom = ph - marginB;
+    const PW = 595.28;
+    const PH = 841.89;
+    const ML = 57, MR = 57, MB = 100;
+    const hdrH = hBuf ? Math.round(PW*(350/2068)) : 75;
+    const CONTENT_TOP = hdrH + 16;
+    const CONTENT_BOT = PH - MB;
+    const CONTENT_W = PW - ML - MR;
 
-    function addPage() {
-      doc.addPage();
-      // Draw header
+    function drawPageChrome() {
+      // Header
       if (hBuf) {
-        try { doc.image(hBuf,0,0,{width:pw,height:headerH}); } catch(e){}
+        try { doc.image(hBuf, 0, 0, {width:PW, height:hdrH}); } catch(e) {}
       } else {
-        doc.rect(0,0,pw,headerH).fill('#111111');
-        doc.fontSize(20).fillColor('#FFE600').font('Helvetica-Bold').text('PRIME TIME ELECTRICIANS',marginL,20,{width:pw-marginL-marginR});
-        doc.fontSize(10).fillColor('#ffffff').font('Helvetica').text('Insurance Inspection Report',marginL,50,{width:pw-marginL-marginR});
+        doc.rect(0,0,PW,hdrH).fill('#111111');
+        doc.fontSize(18).fillColor('#FFE600').font('Helvetica-Bold').text('PRIME TIME ELECTRICIANS',ML,18,{width:CONTENT_W});
+        doc.fontSize(9).fillColor('#ffffff').font('Helvetica').text('Insurance Inspection Report',ML,46,{width:CONTENT_W});
       }
-      // Draw footer
+      // Footer
       if (fBuf) {
-        try { const fH=46,fW=fH*(792/438); doc.image(fBuf,marginL,ph-68,{width:fW,height:fH}); } catch(e){}
+        try { const fH=40,fW=fH*(792/438); doc.image(fBuf,ML,PH-65,{width:fW,height:fH}); } catch(e){}
       }
-      doc.fontSize(7).fillColor('#aaaaaa')
-        .text('Confidential — Prepared for Insurance Purposes Only',0,ph-50,{align:'right',width:pw-marginR})
-        .text('Prime Time Electricians  |  ABN 88 151 349 012  |  EC 9142  |  Page '+doc.bufferedPageRange().count,0,ph-38,{align:'right',width:pw-marginR});
-      // Set cursor to content start
-      doc.x=marginL;
-      doc.y=contentTop;
+      const pgNum = doc.bufferedPageRange().count;
+      doc.fontSize(7).fillColor('#999999')
+        .text('Confidential — Prepared for Insurance Purposes Only',0,PH-48,{align:'right',width:PW-MR})
+        .text('Prime Time Electricians  |  ABN 88 151 349 012  |  EC 9142  |  Page '+pgNum,0,PH-36,{align:'right',width:PW-MR});
     }
 
-    function checkPage(needed=60) {
-      if (doc.y+needed > contentBottom) addPage();
+    function newPage() {
+      doc.addPage();
+      drawPageChrome();
+      doc.x = ML;
+      doc.y = CONTENT_TOP;
     }
 
-    // Parse sections
-    const sections=[];let cur=null;
+    function checkSpace(needed) {
+      if (doc.y + needed > CONTENT_BOT) newPage();
+    }
+
+    function sectionHeading(title) {
+      checkSpace(50);
+      doc.moveDown(0.5);
+      doc.fontSize(10.5).fillColor('#111111').font('Helvetica-Bold').text(title, ML, doc.y, {width:CONTENT_W});
+      const lineY = doc.y + 1;
+      doc.moveTo(ML, lineY).lineTo(ML+CONTENT_W, lineY).strokeColor('#FFE600').lineWidth(1.5).stroke();
+      doc.y = lineY + 6;
+    }
+
+    function bodyText(text) {
+      checkSpace(40);
+      doc.fontSize(9.5).fillColor('#333333').font('Helvetica').text(text, ML, doc.y, {width:CONTENT_W, lineGap:2.5, paragraphGap:4});
+      doc.moveDown(0.25);
+    }
+
+    // Parse report sections
+    const sections=[];
+    let cur=null;
     for (const line of (reportText||'').split('\n')) {
-      if (line.startsWith('## ')){
-        if(cur)sections.push(cur);
-        cur={title:line.replace(/^## \d+\.\s*/,'').replace(/^## /,'').trim().toUpperCase(),paras:[]};
-      } else if (line.trim()&&cur) {
+      if (line.match(/^#{1,3} /)) {
+        if (cur) sections.push(cur);
+        cur = {title: line.replace(/^#{1,3} [\d.]*\s*/,'').trim().toUpperCase(), paras:[]};
+      } else if (line.trim() && cur) {
         cur.paras.push(line.trim());
       }
     }
     if (cur) sections.push(cur);
 
     // Start first page
-    addPage();
+    newPage();
 
-    // Write sections
+    // Write all text sections (skip any photo section)
     for (const sec of sections) {
-      if (sec.title==='SITE PHOTOGRAPHS') continue; // handle photos separately at end
-      checkPage(80);
-      doc.moveDown(0.4).fontSize(11).fillColor('#111111').font('Helvetica-Bold').text(sec.title,{underline:false});
-      doc.moveTo(marginL,doc.y).lineTo(pw-marginR,doc.y).strokeColor('#FFE600').lineWidth(2).stroke();
-      doc.moveDown(0.3);
+      if (/PHOTO/i.test(sec.title)) continue;
+      sectionHeading(sec.title);
       for (const para of sec.paras) {
-        checkPage(50);
-        doc.fontSize(10).fillColor('#333333').font('Helvetica').text(para,marginL,doc.y,{width:pw-marginL-marginR,lineGap:3}).moveDown(0.35);
+        bodyText(para);
       }
-      doc.moveDown(0.3);
     }
 
-    // Photos section at end
+    // Photos section — always at end
     if (pItems.length > 0) {
-      checkPage(80);
-      doc.moveDown(0.4).fontSize(11).fillColor('#111111').font('Helvetica-Bold').text('SITE PHOTOGRAPHS');
-      doc.moveTo(marginL,doc.y).lineTo(pw-marginR,doc.y).strokeColor('#FFE600').lineWidth(2).stroke();
+      // Photos heading
+      checkSpace(50);
       doc.moveDown(0.5);
+      sectionHeading('SITE PHOTOGRAPHS');
+      doc.moveDown(0.3);
 
-      const cols=3, gap=10;
-      const imgW=(pw-marginL-marginR-gap*(cols-1))/cols;
-      const imgH=imgW*0.75;
-      const captionH=16;
-      const rowH=imgH+captionH+gap;
+      const COLS = 3;
+      const GAP_X = 14;
+      const GAP_Y = 28; // space for caption below image
+      const IMG_W = Math.floor((CONTENT_W - GAP_X*(COLS-1)) / COLS);
+      const IMG_H = Math.floor(IMG_W * 0.72);
+      const CAP_H = 18;
+      const ROW_H = IMG_H + CAP_H + 10;
 
-      let col=0, rowY=doc.y;
+      let col = 0;
+      let rowStartY = doc.y;
 
-      for (const {buf,caption} of pItems) {
-        if (rowY+rowH > contentBottom) {
-          addPage();
-          rowY=doc.y;
-          col=0;
+      for (let i=0; i<pItems.length; i++) {
+        const {buf, caption} = pItems[i];
+
+        // Check if we need a new page for this row
+        if (col === 0 && rowStartY + ROW_H > CONTENT_BOT) {
+          newPage();
+          rowStartY = doc.y;
         }
-        const x=marginL+col*(imgW+gap);
-        try { doc.image(buf,x,rowY,{width:imgW,height:imgH,cover:[imgW,imgH]}); } catch(e){}
-        doc.fontSize(8).fillColor('#555555').font('Helvetica')
-          .text(caption,x,rowY+imgH+3,{width:imgW,align:'center'});
+
+        const x = ML + col * (IMG_W + GAP_X);
+        const y = rowStartY;
+
+        // Draw image
+        try {
+          doc.image(buf, x, y, {width:IMG_W, height:IMG_H, cover:[IMG_W, IMG_H]});
+        } catch(e) {}
+
+        // Draw caption below image — never overlapping
+        doc.fontSize(7.5).fillColor('#555555').font('Helvetica')
+          .text(caption, x, y + IMG_H + 4, {width:IMG_W, align:'center', lineBreak:false});
+
         col++;
-        if (col>=cols){col=0;rowY+=rowH;}
+        if (col >= COLS) {
+          col = 0;
+          rowStartY += ROW_H;
+        }
       }
     }
 
