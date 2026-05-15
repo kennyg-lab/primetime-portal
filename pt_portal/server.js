@@ -1004,161 +1004,100 @@ app.get('/download/:id', requireAuth, async (req,res) => {
 
 app.post('/api/pdf', requireAuth, (req,res) => buildPDF(req,res));
 
-function buildPDF(req,res) {
-  const {reportText,photos,address}=req.body;
-  if (!reportText) return res.status(400).json({ok:false,error:'No report text'});
+function buildPDF(req, res) {
+  const { reportText, photos, address } = req.body;
+  if (!reportText) return res.status(400).json({ ok: false, error: 'No report text' });
   try {
-    const doc=new PDFDocument({size:'A4',margins:{top:60,bottom:100,left:57,right:57},autoFirstPage:false});
-    const chunks=[];
-    doc.on('data',c=>chunks.push(c));
-    doc.on('end',()=>{
-      const fname='Report_'+(address||'Report').replace(/[^a-zA-Z0-9]+/g,'_')+'.pdf';
-      res.setHeader('Content-Type','application/pdf');
-      res.setHeader('Content-Disposition','attachment; filename="'+fname+'"');
+    const PW = 595.28, PH = 841.89, ML = 57, MR = 57, MB = 100;
+    let hBuf = null, fBuf = null;
+    try { hBuf = fs.readFileSync(HEADER_IMG); } catch(e) {}
+    try { fBuf = fs.readFileSync(FOOTER_IMG); } catch(e) {}
+    const hdrH = hBuf ? Math.round(PW * (350 / 2068)) : 75;
+    const CTOP = hdrH + 16, CBOT = PH - MB, CW = PW - ML - MR;
+
+    const doc = new PDFDocument({ size: 'A4', margins: { top: CTOP, bottom: MB, left: ML, right: MR }, autoFirstPage: false });
+    const chunks = [];
+    doc.on('data', c => chunks.push(c));
+    doc.on('end', () => {
+      const fname = 'Report_' + (address || 'Report').replace(/[^a-zA-Z0-9]+/g, '_') + '.pdf';
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', 'attachment; filename="' + fname + '"');
       res.send(Buffer.concat(chunks));
     });
 
-    let hBuf=null, fBuf=null;
-    try { hBuf=fs.readFileSync(HEADER_IMG); } catch(e) {}
-    try { fBuf=fs.readFileSync(FOOTER_IMG); } catch(e) {}
-
-    const pItems=(photos||[]).filter(p=>p&&p.data).map(p=>({
-      buf: Buffer.from(p.data.split(',')[1],'base64'),
-      caption: p.caption||''
+    const pItems = (photos || []).filter(p => p && p.data).map(p => ({
+      buf: Buffer.from(p.data.split(',')[1], 'base64'),
+      caption: p.caption || ''
     }));
 
-    const PW = 595.28;
-    const PH = 841.89;
-    const ML = 57, MR = 57, MB = 100;
-    const hdrH = hBuf ? Math.round(PW*(350/2068)) : 75;
-    const CONTENT_TOP = hdrH + 16;
-    const CONTENT_BOT = PH - MB;
-    const CONTENT_W = PW - ML - MR;
-
-    function drawPageChrome() {
-      // Header
-      if (hBuf) {
-        try { doc.image(hBuf, 0, 0, {width:PW, height:hdrH}); } catch(e) {}
-      } else {
-        doc.rect(0,0,PW,hdrH).fill('#111111');
-        doc.fontSize(18).fillColor('#FFE600').font('Helvetica-Bold').text('PRIME TIME ELECTRICIANS',ML,18,{width:CONTENT_W});
-        doc.fontSize(9).fillColor('#ffffff').font('Helvetica').text('Insurance Inspection Report',ML,46,{width:CONTENT_W});
+    function chrome() {
+      if (hBuf) { try { doc.image(hBuf, 0, 0, { width: PW, height: hdrH }); } catch(e) {} }
+      else {
+        doc.rect(0, 0, PW, hdrH).fill('#111111');
+        doc.fontSize(18).fillColor('#FFE600').font('Helvetica-Bold').text('PRIME TIME ELECTRICIANS', ML, 18, { width: CW });
+        doc.fontSize(9).fillColor('#ffffff').font('Helvetica').text('Insurance Inspection Report', ML, 46, { width: CW });
       }
-      // Footer
-      if (fBuf) {
-        try { const fH=40,fW=fH*(792/438); doc.image(fBuf,ML,PH-65,{width:fW,height:fH}); } catch(e){}
-      }
-      const pgNum = doc.bufferedPageRange().count;
+      if (fBuf) { try { const fH = 40, fW = fH * (792 / 438); doc.image(fBuf, ML, PH - 65, { width: fW, height: fH }); } catch(e) {} }
+      const pg = doc.bufferedPageRange().count;
       doc.fontSize(7).fillColor('#999999')
-        .text('Confidential — Prepared for Insurance Purposes Only',0,PH-48,{align:'right',width:PW-MR})
-        .text('Prime Time Electricians  |  ABN 88 151 349 012  |  EC 9142  |  Page '+pgNum,0,PH-36,{align:'right',width:PW-MR});
+        .text('Confidential — Prepared for Insurance Purposes Only', 0, PH - 48, { align: 'right', width: PW - MR })
+        .text('Prime Time Electricians  |  ABN 88 151 349 012  |  EC 9142  |  Page ' + pg, 0, PH - 36, { align: 'right', width: PW - MR });
     }
 
-    function newPage() {
-      doc.addPage();
-      drawPageChrome();
-      doc.x = ML;
-      doc.y = CONTENT_TOP;
+    function np() { doc.addPage(); chrome(); doc.x = ML; doc.y = CTOP; }
+    function chk(n) { if (doc.y + n > CBOT) np(); }
+
+    function hd(t) {
+      chk(55); doc.moveDown(0.4);
+      doc.fontSize(10.5).fillColor('#111111').font('Helvetica-Bold').text(t, ML, doc.y, { width: CW });
+      doc.moveTo(ML, doc.y + 2).lineTo(ML + CW, doc.y + 2).strokeColor('#FFE600').lineWidth(1.5).stroke();
+      doc.y = doc.y + 7; doc.x = ML;
     }
 
-    function checkSpace(needed) {
-      if (doc.y + needed > CONTENT_BOT) newPage();
-    }
-
-    function sectionHeading(title) {
-      checkSpace(50);
-      doc.moveDown(0.5);
-      doc.fontSize(10.5).fillColor('#111111').font('Helvetica-Bold').text(title, ML, doc.y, {width:CONTENT_W});
-      const lineY = doc.y + 1;
-      doc.moveTo(ML, lineY).lineTo(ML+CONTENT_W, lineY).strokeColor('#FFE600').lineWidth(1.5).stroke();
-      doc.y = lineY + 6;
-    }
-
-    function bodyText(text) {
-      checkSpace(40);
-      doc.fontSize(9.5).fillColor('#333333').font('Helvetica').text(text, ML, doc.y, {width:CONTENT_W, lineGap:2.5, paragraphGap:4});
-      doc.moveDown(0.25);
-    }
-
-    // Parse report sections
-    const sections=[];
-    let cur=null;
-    for (const line of (reportText||'').split('\n')) {
-      if (line.match(/^#{1,3} /)) {
-        if (cur) sections.push(cur);
-        cur = {title: line.replace(/^#{1,3} [\d.]*\s*/,'').trim().toUpperCase(), paras:[]};
-      } else if (line.trim() && cur) {
-        cur.paras.push(line.trim());
-      }
-    }
-    if (cur) sections.push(cur);
-
-    // Start first page
-    newPage();
-
-    // Write all text sections (skip any photo section)
-    for (const sec of sections) {
-      if (/PHOTO/i.test(sec.title)) continue;
-      sectionHeading(sec.title);
-      for (const para of sec.paras) {
-        bodyText(para);
-      }
-    }
-
-    // Photos section — always at end
-    if (pItems.length > 0) {
-      // Photos heading
-      checkSpace(50);
-      doc.moveDown(0.5);
-      sectionHeading('SITE PHOTOGRAPHS');
+    function bt(p) {
+      chk(35);
+      doc.fontSize(9.5).fillColor('#333333').font('Helvetica').text(p, ML, doc.y, { width: CW, lineGap: 2.5 });
       doc.moveDown(0.3);
+    }
 
-      const COLS = 3;
-      const GAP_X = 14;
-      const GAP_Y = 28; // space for caption below image
-      const IMG_W = Math.floor((CONTENT_W - GAP_X*(COLS-1)) / COLS);
-      const IMG_H = Math.floor(IMG_W * 0.72);
-      const CAP_H = 18;
-      const ROW_H = IMG_H + CAP_H + 10;
+    const secs = []; let cur = null;
+    for (const line of (reportText || '').split('\n')) {
+      if (line.match(/^#{1,3} /)) { if (cur) secs.push(cur); cur = { title: line.replace(/^#{1,3} [\d.]*\s*/, '').trim().toUpperCase(), paras: [] }; }
+      else if (line.trim() && cur) cur.paras.push(line.trim());
+    }
+    if (cur) secs.push(cur);
 
-      let col = 0;
-      let rowStartY = doc.y;
+    np();
+    for (const sec of secs) {
+      if (/PHOTO/i.test(sec.title)) continue;
+      hd(sec.title);
+      for (const p of sec.paras) bt(p);
+    }
 
-      for (let i=0; i<pItems.length; i++) {
-        const {buf, caption} = pItems[i];
-
-        // Check if we need a new page for this row
-        if (col === 0 && rowStartY + ROW_H > CONTENT_BOT) {
-          newPage();
-          rowStartY = doc.y;
-        }
-
-        const x = ML + col * (IMG_W + GAP_X);
-        const y = rowStartY;
-
-        // Draw image
-        try {
-          doc.image(buf, x, y, {width:IMG_W, height:IMG_H, cover:[IMG_W, IMG_H]});
-        } catch(e) {}
-
-        // Draw caption below image — never overlapping
-        doc.fontSize(7.5).fillColor('#555555').font('Helvetica')
-          .text(caption, x, y + IMG_H + 4, {width:IMG_W, align:'center', lineBreak:false});
-
+    if (pItems.length > 0) {
+      chk(55); doc.moveDown(0.4); hd('SITE PHOTOGRAPHS');
+      const COLS = 3, GX = 12;
+      const IW = Math.floor((CW - GX * (COLS - 1)) / COLS);
+      const IH = Math.floor(IW * 0.72);
+      const RH = IH + 22;
+      let col = 0, ry = doc.y + 6;
+      for (const { buf, caption } of pItems) {
+        if (col === 0 && ry + RH > CBOT) { np(); ry = doc.y + 6; }
+        const x = ML + col * (IW + GX);
+        try { doc.image(buf, x, ry, { width: IW, height: IH }); } catch(e) {}
+        doc.fontSize(7.5).fillColor('#444444').font('Helvetica').text(caption, x, ry + IH + 3, { width: IW, align: 'center', lineBreak: false });
         col++;
-        if (col >= COLS) {
-          col = 0;
-          rowStartY += ROW_H;
-        }
+        if (col >= COLS) { col = 0; ry += RH; }
       }
     }
 
     doc.end();
   } catch(e) {
-    console.error('PDF error:',e);
-    if (!res.headersSent) res.status(500).json({ok:false,error:e.message});
+    console.error('PDF error:', e);
+    if (!res.headersSent) res.status(500).json({ ok: false, error: e.message });
   }
 }
+
 
 // ── Start ─────────────────────────────────────────────────────────────────────
 app.listen(PORT,()=>console.log('Prime Time Portal running on port '+PORT));
