@@ -5,6 +5,7 @@ const session     = require('express-session');
 const multer      = require('multer');
 const fetch       = require('node-fetch');
 const PDFDocument = require('pdfkit');
+const { Document, Packer, Paragraph, TextRun, HeadingLevel, AlignmentType, ImageRun, BorderStyle } = require('docx');
 const pdfParse    = require('pdf-parse');
 const { PDFDocument: PDFLib } = require('pdf-lib');
 const { v4: uuid }= require('uuid');
@@ -650,88 +651,69 @@ function buildEditor(reportId, data) {
 // ── Extract PDF ───────────────────────────────────────────────────────────────
 app.post('/api/extract', requireAuth, upload.single('pdf'), async (req, res) => {
   try {
-    const pdfBase64 = req.file.buffer.toString('base64');
+    // Extract text from PDF first — much smaller than sending base64
+    const pdfData = await pdfParse(req.file.buffer);
+    const pdfText = pdfData.text.substring(0, 8000);
 
-    // Send PDF directly to Claude to read natively
+    // Send just the text to Claude — avoids rate limit from large PDF base64
     let data = {};
     try {
-      const apiRes = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': ANTHROPIC_KEY,
-          'anthropic-version': '2023-06-01'
-        },
-        body: JSON.stringify({
-          model: 'claude-sonnet-4-5',
-          max_tokens: 3000,
-          messages: [{
-            role: 'user',
-            content: [
-              {
-                type: 'document',
-                source: { type: 'base64', media_type: 'application/pdf', data: pdfBase64 }
-              },
-              {
-                type: 'text',
-                text: `You are processing an iAudit insurance inspection report for Prime Time Electricians.
+      const prompt = `You are processing an iAudit insurance inspection report for Prime Time Electricians.
 
-IMPORTANT: This PDF has a table format with LABELS on the left and VALUES on the right. You must extract the VALUES not the labels.
+IMPORTANT: This PDF has a table format with LABELS on the left and VALUES on the right. Extract the VALUES not the labels.
 
-For example:
-- "Site Address" is a LABEL — extract the address value next to it
-- "Full Name of Person you met with" is a LABEL — extract the person's name
-- "Item name" is a LABEL — extract the actual item name like "Switchboard RCBOs" or "Consumer & sub mains"
-- "Make and Model" is a LABEL — extract the actual brand/model value
-- "Damage is the Caused By ?" is a LABEL — extract the cause like "Water Ingress" or "Storm Surge"
-- "Details of damage" is a LABEL — extract the paragraph of text below it
+Examples:
+- "Site Address" is a label — the value is the actual address like "43 Camberwarra Dr, Craigie WA 6025"
+- "Full Name of Person you met with" is a label — value is the person's name like "Georgia Kidd"
+- "Item name" is a label — value is like "Switchboard RCBOs" or "Consumer & sub mains"
+- "Make and Model" is a label — value is the actual brand
+- "Damage is the Caused By ?" is a label — value is like "Water Ingress" or "Storm Surge"
+- "Details of damage" is a label — value is the paragraph of technician notes below it
 
-Read this PDF carefully and return ONLY valid JSON — no markdown, no explanation:
+PDF TEXT:
+${pdfText}
 
+Return ONLY valid JSON — no markdown:
 {
-  "address": "the actual street address value",
-  "inspDate": "the actual date value e.g. 8 May 2026",
-  "inspTime": "the actual time value e.g. 10:59 AWST",
+  "address": "actual street address value",
+  "inspDate": "actual date e.g. 8 May 2026",
+  "inspTime": "actual time e.g. 10:59 AWST",
   "rptDate": "same as inspDate",
-  "insured": "the actual name of the person met with",
-  "tech": "the actual technician name from Tech Signature",
-  "item": "the actual item name value e.g. Switchboard RCBOs or Consumer & sub mains",
-  "model": "the actual make and model value",
-  "age": "the actual approximate age value",
-  "fault": "the actual fault codes value or empty string",
-  "cable": "the actual circuit cable size value",
-  "voltage": "the actual voltage reading value",
-  "cutout": "the actual measurements value",
-  "ownerDate": "the actual date of loss value",
-  "causeS": "the actual cause of damage value e.g. Water Ingress or Storm Surge",
-  "wearTear": "the actual Yes or No or N/A value",
-  "yearBuilt": "the actual year built value",
-  "roofType": "the actual roof type value",
-  "damageDetails": "the full text paragraph from the Details of damage field",
-  "findings": "Write 3-4 professional sentences: describe the property, what was inspected, condition found and measurements taken on site",
-  "causeD": "Write 3-4 professional sentences: use the Details of damage text to explain exactly how the damage occurred, what failed and why it is unsafe",
-  "rec": "Write 1-2 sentences: clearly recommend full replacement or repair and state why",
-  "repair": "Write 1 sentence: state specifically what work must be carried out",
-  "summary": "Write 3-4 sentences covering the item inspected, cause of damage and recommended outcome. Do NOT repeat the property address or year built."
-}`
-              }
-            ]
-          }]
-        })
-      });
-      const apiJson = await apiRes.json();
-      const text = apiJson.content?.[0]?.text || '';
-      console.log('Claude PDF read (400):', text.substring(0, 400));
+  "insured": "actual person name",
+  "tech": "actual technician name",
+  "item": "actual item name e.g. Switchboard RCBOs",
+  "model": "actual make and model",
+  "age": "actual age value",
+  "fault": "actual fault codes or empty",
+  "cable": "actual cable size",
+  "voltage": "actual voltage value",
+  "cutout": "actual measurements",
+  "ownerDate": "actual date of loss",
+  "causeS": "actual cause e.g. Water Ingress",
+  "wearTear": "No or Yes or N/A",
+  "yearBuilt": "actual year",
+  "roofType": "actual roof type",
+  "damageDetails": "full verbatim text from Details of damage field",
+  "findings": "3-4 professional sentences: property description, what was inspected, condition found, measurements taken",
+  "causeD": "3-4 professional sentences: use Details of damage notes to explain exactly what happened, what failed, why unsafe",
+  "rec": "1-2 sentences: recommend full replacement or repair and why",
+  "repair": "1 sentence: specifically what work must be done",
+  "summary": "3-4 sentences on item inspected, cause and outcome. Do NOT repeat the address or year built."
+}`;
+
+      const text = await callClaude([{ role: 'user', content: prompt }], 2000);
+      console.log('Claude response (300):', text.substring(0, 300));
       const m = text.match(/\{[\s\S]*\}/);
       if (m) {
         data = JSON.parse(m[0]);
         console.log('Extracted OK — address:', data.address, '| findings length:', data.findings?.length);
       } else {
-        console.error('No JSON in response');
+        console.error('No JSON found in response');
       }
     } catch(e) {
-      console.error('PDF read failed:', e.message);
+      console.error('Extraction failed:', e.message);
     }
+
 
     // Extract photos
     const pdfDoc = await PDFLib.load(req.file.buffer, {ignoreEncryption:true});
@@ -897,6 +879,7 @@ app.get('/draft/:id', requireAuth, (req,res) => {
       <div class="page-title">Draft Report</div>
       <div style="display:flex;gap:8px">
         <a href="/edit/${r.id}" class="btn btn-ghost btn-sm">&larr; Back to Editor</a>
+        <button onclick="exportWord()" class="btn btn-ghost">&#128196; Word Doc</button>
         <button onclick="exportPDF()" class="btn btn-blk">&#8595; Export PDF</button>
         <button onclick="approve('${r.id}')" class="btn btn-grn">&#10003; Approve</button>
       </div>
@@ -932,6 +915,16 @@ app.get('/draft/:id', requireAuth, (req,res) => {
     const REPORT_ADDR=${JSON.stringify(r.address||'')};
     const REPORT_ID=${JSON.stringify(r.id)};
     const REPORT_PHOTOS=${JSON.stringify((r.photos||[]).map(p=>({data:p.data||null,caption:p.caption||''})))};
+
+    async function exportWord(){
+      if(!REPORT_TEXT){alert('No report text — generate first.');return;}
+      try{
+        const res=await fetch('/api/word',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({reportText:REPORT_TEXT,photos:REPORT_PHOTOS,address:REPORT_ADDR})});
+        if(!res.ok)throw new Error('Word export failed');
+        const blob=await res.blob(),url=URL.createObjectURL(blob),a=document.createElement('a');
+        a.href=url;a.download='Report_'+REPORT_ADDR.replace(/[^a-zA-Z0-9]+/g,'_')+'.docx';a.click();URL.revokeObjectURL(url);
+      }catch(e){alert('Error: '+e.message);}
+    }
 
     async function exportPDF(){
       if(!REPORT_TEXT){alert('No report text — go back to editor and click Generate Report first.');return;}
@@ -1098,6 +1091,138 @@ function buildPDF(req, res) {
   }
 }
 
+
+// ── Word Export ───────────────────────────────────────────────────────────────
+app.post('/api/word', requireAuth, async (req, res) => {
+  const { reportText, photos, address } = req.body;
+  if (!reportText) return res.status(400).json({ ok: false, error: 'No report text' });
+  try {
+    const children = [];
+
+    // Parse sections from report text
+    const secs = []; let cur = null;
+    for (const line of (reportText || '').split('\n')) {
+      if (line.match(/^#{1,3} /)) {
+        if (cur) secs.push(cur);
+        cur = { title: line.replace(/^#{1,3} [\d.]*\s*/, '').trim(), paras: [] };
+      } else if (line.trim() && cur) {
+        cur.paras.push(line.trim());
+      }
+    }
+    if (cur) secs.push(cur);
+
+    // Add header image if available
+    try {
+      const hBuf = fs.readFileSync(HEADER_IMG);
+      children.push(new Paragraph({
+        children: [new ImageRun({ data: hBuf, transformation: { width: 620, height: 95 }, type: 'jpg' })]
+      }));
+      children.push(new Paragraph({ text: '' }));
+    } catch(e) {
+      // No header image — add title text
+      children.push(new Paragraph({
+        heading: HeadingLevel.TITLE,
+        children: [new TextRun({ text: 'PRIME TIME ELECTRICIANS', bold: true, size: 36, color: '111111' })]
+      }));
+      children.push(new Paragraph({
+        children: [new TextRun({ text: 'Insurance Inspection Report', size: 22, color: '666666' })]
+      }));
+      children.push(new Paragraph({ text: '' }));
+    }
+
+    // Write sections
+    for (const sec of secs) {
+      if (/PHOTO/i.test(sec.title)) continue;
+
+      // Section heading with yellow underline
+      children.push(new Paragraph({
+        children: [new TextRun({ text: sec.title.toUpperCase(), bold: true, size: 22, color: '111111' })],
+        border: { bottom: { style: BorderStyle.SINGLE, size: 12, color: 'FFE600', space: 4 } },
+        spacing: { before: 280, after: 120 }
+      }));
+
+      for (const para of sec.paras) {
+        children.push(new Paragraph({
+          children: [new TextRun({ text: para, size: 20, color: '333333' })],
+          spacing: { after: 120 },
+          alignment: AlignmentType.JUSTIFIED
+        }));
+      }
+    }
+
+    // Photos section
+    const pItems = (photos || []).filter(p => p && p.data).map(p => ({
+      buf: Buffer.from(p.data.split(',')[1], 'base64'),
+      caption: p.caption || '',
+      isJpeg: p.data.startsWith('data:image/jpeg')
+    }));
+
+    if (pItems.length > 0) {
+      children.push(new Paragraph({
+        children: [new TextRun({ text: 'SITE PHOTOGRAPHS', bold: true, size: 22, color: '111111' })],
+        border: { bottom: { style: BorderStyle.SINGLE, size: 12, color: 'FFE600', space: 4 } },
+        spacing: { before: 280, after: 160 }
+      }));
+
+      // 2 photos per row
+      for (let i = 0; i < pItems.length; i += 2) {
+        const rowPhotos = pItems.slice(i, i + 2);
+        const rowChildren = [];
+        for (const p of rowPhotos) {
+          try {
+            rowChildren.push(new ImageRun({
+              data: p.buf,
+              transformation: { width: 270, height: 195 },
+              type: p.isJpeg ? 'jpg' : 'png'
+            }));
+            rowChildren.push(new TextRun({ text: '    ' }));
+          } catch(e) {}
+        }
+        if (rowChildren.length > 0) {
+          children.push(new Paragraph({ children: rowChildren, spacing: { after: 40 } }));
+          // Captions row
+          const capChildren = rowPhotos.map(p =>
+            new TextRun({ text: p.caption.padEnd(45), size: 16, color: '666666', italics: true })
+          );
+          children.push(new Paragraph({ children: capChildren, spacing: { after: 160 } }));
+        }
+      }
+    }
+
+    // Footer image
+    try {
+      const fBuf = fs.readFileSync(FOOTER_IMG);
+      children.push(new Paragraph({ text: '' }));
+      children.push(new Paragraph({
+        children: [new ImageRun({ data: fBuf, transformation: { width: 180, height: 50 }, type: 'png' })]
+      }));
+    } catch(e) {}
+
+    const doc = new Document({
+      styles: {
+        default: { document: { run: { font: 'Arial', size: 20 } } }
+      },
+      sections: [{
+        properties: {
+          page: {
+            size: { width: 11906, height: 16838 },
+            margin: { top: 720, right: 720, bottom: 720, left: 720 }
+          }
+        },
+        children
+      }]
+    });
+
+    const buffer = await Packer.toBuffer(doc);
+    const fname = 'Report_' + (address || 'Report').replace(/[^a-zA-Z0-9]+/g, '_') + '.docx';
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+    res.setHeader('Content-Disposition', 'attachment; filename="' + fname + '"');
+    res.send(buffer);
+  } catch(e) {
+    console.error('Word export error:', e);
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
 
 // ── Start ─────────────────────────────────────────────────────────────────────
 app.listen(PORT,()=>console.log('Prime Time Portal running on port '+PORT));
