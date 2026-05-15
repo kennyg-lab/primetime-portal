@@ -1008,7 +1008,7 @@ function buildPDF(req,res) {
   const {reportText,photos,address}=req.body;
   if (!reportText) return res.status(400).json({ok:false,error:'No report text'});
   try {
-    const doc=new PDFDocument({size:'A4',margins:{top:130,bottom:90,left:57,right:57},autoFirstPage:false});
+    const doc=new PDFDocument({size:'A4',margins:{top:60,bottom:90,left:57,right:57},autoFirstPage:false});
     const chunks=[];
     doc.on('data',c=>chunks.push(c));
     doc.on('end',()=>{
@@ -1018,79 +1018,107 @@ function buildPDF(req,res) {
       res.send(Buffer.concat(chunks));
     });
 
-    // Load header/footer images safely
     let hBuf=null, fBuf=null;
-    try { hBuf=fs.readFileSync(HEADER_IMG); } catch(e) { console.log('Header image missing'); }
-    try { fBuf=fs.readFileSync(FOOTER_IMG); } catch(e) { console.log('Footer image missing'); }
+    try { hBuf=fs.readFileSync(HEADER_IMG); } catch(e) {}
+    try { fBuf=fs.readFileSync(FOOTER_IMG); } catch(e) {}
 
-    const pItems=(photos||[]).map(p=>({buf:p.data?Buffer.from(p.data.split(',')[1],'base64'):null,caption:p.caption||''}));
+    const pItems=(photos||[]).filter(p=>p&&p.data).map(p=>({
+      buf:Buffer.from(p.data.split(',')[1],'base64'),
+      caption:p.caption||''
+    }));
 
-    function addPage(){
+    const pw=595.28; // A4 width in points
+    const ph=841.89; // A4 height in points
+    const marginL=57, marginR=57, marginB=90;
+    const headerH = hBuf ? pw*(350/2068) : 80;
+    const contentTop = headerH + 14;
+    const contentBottom = ph - marginB;
+
+    function addPage() {
       doc.addPage();
-      const pw=doc.page.width;
-      const ph=doc.page.height;
+      // Draw header
       if (hBuf) {
-        try {
-          const hh=pw*(350/2068);
-          doc.image(hBuf,0,0,{width:pw,height:hh});
-          doc.y=hh+10;
-        } catch(e){ doc.y=60; }
+        try { doc.image(hBuf,0,0,{width:pw,height:headerH}); } catch(e){}
       } else {
-        // Fallback text header
-        doc.save();
-        doc.rect(0,0,pw,75).fill('#111111');
-        doc.fontSize(20).fillColor('#FFE600').font('Helvetica-Bold').text('PRIME TIME ELECTRICIANS',40,18,{width:pw-80});
-        doc.fontSize(10).fillColor('#ffffff').font('Helvetica').text('Insurance Inspection Report',40,48,{width:pw-80});
-        doc.restore();
-        doc.y=85;
+        doc.rect(0,0,pw,headerH).fill('#111111');
+        doc.fontSize(20).fillColor('#FFE600').font('Helvetica-Bold').text('PRIME TIME ELECTRICIANS',marginL,20,{width:pw-marginL-marginR});
+        doc.fontSize(10).fillColor('#ffffff').font('Helvetica').text('Insurance Inspection Report',marginL,50,{width:pw-marginL-marginR});
       }
+      // Draw footer
       if (fBuf) {
-        try { const fH=46,fW=fH*(792/438); doc.image(fBuf,57,ph-68,{width:fW,height:fH}); } catch(e){}
+        try { const fH=46,fW=fH*(792/438); doc.image(fBuf,marginL,ph-68,{width:fW,height:fH}); } catch(e){}
       }
-      doc.fontSize(7.5).fillColor('#888888')
-        .text('Confidential — Prepared for Insurance Purposes Only',0,ph-52,{align:'right',width:pw-57})
-        .text('Prime Time Electricians  |  ABN 88 151 349 012  |  EC 9142  |  Page '+doc.bufferedPageRange().count,0,ph-40,{align:'right',width:pw-57});
-      // Reset position to content area
-      doc.x=57;
+      doc.fontSize(7).fillColor('#aaaaaa')
+        .text('Confidential — Prepared for Insurance Purposes Only',0,ph-50,{align:'right',width:pw-marginR})
+        .text('Prime Time Electricians  |  ABN 88 151 349 012  |  EC 9142  |  Page '+doc.bufferedPageRange().count,0,ph-38,{align:'right',width:pw-marginR});
+      // Set cursor to content start
+      doc.x=marginL;
+      doc.y=contentTop;
     }
 
+    function checkPage(needed=60) {
+      if (doc.y+needed > contentBottom) addPage();
+    }
+
+    // Parse sections
     const sections=[];let cur=null;
     for (const line of (reportText||'').split('\n')) {
-      if (line.startsWith('## ')){if(cur)sections.push(cur);cur={title:line.replace(/^## \d+\.\s*/,'').replace('## ','').trim().toUpperCase(),paras:[]};}
-      else if (line.trim()&&cur) cur.paras.push(line.trim());
+      if (line.startsWith('## ')){
+        if(cur)sections.push(cur);
+        cur={title:line.replace(/^## \d+\.\s*/,'').replace(/^## /,'').trim().toUpperCase(),paras:[]};
+      } else if (line.trim()&&cur) {
+        cur.paras.push(line.trim());
+      }
     }
     if (cur) sections.push(cur);
 
-    // If no sections parsed, just dump the text
-    if (sections.length===0) {
-      addPage();
-      doc.fontSize(10).fillColor('#333').font('Helvetica').text(reportText,{lineGap:3});
-    } else {
-      addPage();
-      for (const sec of sections) {
-        if (doc.y>doc.page.height-doc.page.margins.bottom-80) addPage();
-        doc.moveDown(0.6).fontSize(11).fillColor('#111').font('Helvetica-Bold').text(sec.title);
-        doc.moveDown(0.3);
-        for (const para of sec.paras) {
-          if (doc.y>doc.page.height-doc.page.margins.bottom-60) addPage();
-          doc.fontSize(10).fillColor('#333').font('Helvetica').text(para,{lineGap:3}).moveDown(0.4);
+    // Start first page
+    addPage();
+
+    // Write sections
+    for (const sec of sections) {
+      if (sec.title==='SITE PHOTOGRAPHS') continue; // handle photos separately at end
+      checkPage(80);
+      doc.moveDown(0.4).fontSize(11).fillColor('#111111').font('Helvetica-Bold').text(sec.title,{underline:false});
+      doc.moveTo(marginL,doc.y).lineTo(pw-marginR,doc.y).strokeColor('#FFE600').lineWidth(2).stroke();
+      doc.moveDown(0.3);
+      for (const para of sec.paras) {
+        checkPage(50);
+        doc.fontSize(10).fillColor('#333333').font('Helvetica').text(para,marginL,doc.y,{width:pw-marginL-marginR,lineGap:3}).moveDown(0.35);
+      }
+      doc.moveDown(0.3);
+    }
+
+    // Photos section at end
+    if (pItems.length > 0) {
+      checkPage(80);
+      doc.moveDown(0.4).fontSize(11).fillColor('#111111').font('Helvetica-Bold').text('SITE PHOTOGRAPHS');
+      doc.moveTo(marginL,doc.y).lineTo(pw-marginR,doc.y).strokeColor('#FFE600').lineWidth(2).stroke();
+      doc.moveDown(0.5);
+
+      const cols=3, gap=10;
+      const imgW=(pw-marginL-marginR-gap*(cols-1))/cols;
+      const imgH=imgW*0.75;
+      const captionH=16;
+      const rowH=imgH+captionH+gap;
+
+      let col=0, rowY=doc.y;
+
+      for (const {buf,caption} of pItems) {
+        if (rowY+rowH > contentBottom) {
+          addPage();
+          rowY=doc.y;
+          col=0;
         }
-        if (sec.title==='SITE PHOTOGRAPHS') {
-          const valid=pItems.filter(p=>p.buf);if(!valid.length)continue;
-          doc.moveDown(0.4);
-          const pw=doc.page.width-doc.page.margins.left-doc.page.margins.right;
-          const cols=3,gap=8,imgW=(pw-gap*(cols-1))/cols,imgH=imgW*0.75,rowH=imgH+20+gap;
-          let col=0,rowY=doc.y;
-          for (const {buf,caption} of valid) {
-            if (rowY+rowH>doc.page.height-doc.page.margins.bottom){addPage();rowY=doc.y;}
-            const x=doc.page.margins.left+col*(imgW+gap);
-            try{doc.image(buf,x,rowY,{width:imgW,height:imgH,cover:[imgW,imgH]});}catch(e){}
-            doc.fontSize(7.5).fillColor('#888').font('Helvetica').text(caption,x,rowY+imgH+3,{width:imgW,align:'center'});
-            col++;if(col>=cols){col=0;rowY+=rowH;}
-          }
-        }
+        const x=marginL+col*(imgW+gap);
+        try { doc.image(buf,x,rowY,{width:imgW,height:imgH,cover:[imgW,imgH]}); } catch(e){}
+        doc.fontSize(8).fillColor('#555555').font('Helvetica')
+          .text(caption,x,rowY+imgH+3,{width:imgW,align:'center'});
+        col++;
+        if (col>=cols){col=0;rowY+=rowH;}
       }
     }
+
     doc.end();
   } catch(e) {
     console.error('PDF error:',e);
