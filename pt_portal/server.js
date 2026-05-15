@@ -5,776 +5,585 @@ const session     = require('express-session');
 const multer      = require('multer');
 const fetch       = require('node-fetch');
 const PDFDocument = require('pdfkit');
-const { Document, Packer, Paragraph, TextRun, HeadingLevel, AlignmentType, ImageRun, BorderStyle } = require('docx');
 const pdfParse    = require('pdf-parse');
 const { PDFDocument: PDFLib } = require('pdf-lib');
-const { v4: uuid }= require('uuid');
-const fs          = require('fs');
-const path        = require('path');
+const { Document, Packer, Paragraph, TextRun, HeadingLevel, AlignmentType, ImageRun, BorderStyle } = require('docx');
+const { v4: uuid } = require('uuid');
+const fs   = require('fs');
+const path = require('path');
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
 
 const PORTAL_PASSWORD = process.env.PORTAL_PASSWORD || 'primetime2026';
 const ANTHROPIC_KEY   = process.env.ANTHROPIC_API_KEY || '';
-const SESSION_SECRET  = process.env.SESSION_SECRET   || 'pt-secret-change-me';
+const SESSION_SECRET  = process.env.SESSION_SECRET || 'pt-secret';
 
 const ASSETS     = path.join(__dirname, 'assets');
 const HEADER_IMG = path.join(ASSETS, 'pt_header_strip.jpg');
 const FOOTER_IMG = path.join(ASSETS, 'lh_footer.png');
 
-// ── Database ──────────────────────────────────────────────────────────────────
-const DB = { reports: [] };
-function readDB() {
-  try { const d = JSON.parse(fs.readFileSync('/tmp/pt_reports.json','utf8')); DB.reports = d.reports||[]; } catch(e) {}
-  return DB;
+// ── In-memory store (survives within a deployment) ────────────────────────────
+const REPORTS = {};  // id -> report object
+
+function saveReport(r) {
+  REPORTS[r.id] = r;
+  try { fs.writeFileSync('/tmp/reports.json', JSON.stringify(REPORTS)); } catch(e) {}
 }
-function writeDB() {
-  try { fs.writeFileSync('/tmp/pt_reports.json', JSON.stringify(DB,null,2)); } catch(e) {}
+
+function loadReports() {
+  try {
+    const d = JSON.parse(fs.readFileSync('/tmp/reports.json','utf8'));
+    Object.assign(REPORTS, d);
+  } catch(e) {}
 }
-readDB();
+
+loadReports();
 
 // ── Middleware ────────────────────────────────────────────────────────────────
-app.use(express.json({ limit: '50mb' }));
-app.use(express.urlencoded({ extended: true, limit: '50mb' }));
-app.use(session({ secret: SESSION_SECRET, resave: false, saveUninitialized: false, cookie: { secure: false, maxAge: 8*60*60*1000 } }));
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25*1024*1024 } });
+app.use(express.json({ limit: '100mb' }));
+app.use(express.urlencoded({ extended: true, limit: '100mb' }));
+app.use(session({
+  secret: SESSION_SECRET,
+  resave: true,
+  saveUninitialized: true,
+  cookie: { secure: false, maxAge: 24 * 60 * 60 * 1000 }
+}));
+
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 30 * 1024 * 1024 } });
 
 function requireAuth(req, res, next) {
-  if (req.session?.authenticated) return next();
+  if (req.session.auth) return next();
   res.redirect('/login');
 }
 
-// ── Claude API ────────────────────────────────────────────────────────────────
-async function callClaude(messages, maxTokens=1500) {
-  const res = await fetch('https://api.anthropic.com/v1/messages', {
+// ── Claude ────────────────────────────────────────────────────────────────────
+async function claude(messages, maxTokens = 2000) {
+  const r = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: { 'Content-Type':'application/json', 'x-api-key':ANTHROPIC_KEY, 'anthropic-version':'2023-06-01' },
     body: JSON.stringify({ model:'claude-sonnet-4-5', max_tokens:maxTokens, messages })
   });
-  const json = await res.json();
-  if (!res.ok) throw new Error(json.error?.message||'API error');
-  return json.content?.[0]?.text||'';
+  const j = await r.json();
+  if (!r.ok) throw new Error(j.error?.message || 'API error');
+  return j.content?.[0]?.text || '';
 }
 
-// ── Styles ────────────────────────────────────────────────────────────────────
-const BASE_CSS = `
+// ── Shell ─────────────────────────────────────────────────────────────────────
+const CSS = `
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 :root{--y:#FFE600;--blk:#111;--bdr:#E0E0E0;--grey:#777;--txt:#222}
 body{font-family:"Inter",sans-serif;background:#fff;color:var(--txt);min-height:100vh}
-.topbar{background:var(--blk);border-bottom:3px solid var(--y);padding:0 28px;display:flex;align-items:center;justify-content:space-between;height:58px;position:sticky;top:0;z-index:100}
-.logo{display:flex;align-items:center;gap:10px;text-decoration:none}
-.hex{width:28px;height:28px;background:var(--y);clip-path:polygon(25% 0%,75% 0%,100% 50%,75% 100%,25% 100%,0% 50%);display:grid;place-items:center;font-family:'Barlow Condensed',sans-serif;font-weight:900;font-size:13px;color:var(--blk)}
-.logo-txt{font-family:'Barlow Condensed',sans-serif;font-weight:700;font-size:15px;text-transform:uppercase;letter-spacing:.06em;color:#fff}
-.logo-txt em{color:var(--y);font-style:normal}
-.topnav{display:flex;align-items:center;gap:4px}
-.tnav{color:#888;font-size:12px;font-weight:500;text-decoration:none;padding:6px 12px;border-radius:3px;transition:all .13s}
-.tnav:hover{color:#fff;background:rgba(255,255,255,.08)}
-.tnav.on{color:var(--y);background:rgba(255,230,0,.1)}
-.logout{font-size:11px;font-weight:600;color:#555;text-decoration:none;text-transform:uppercase;letter-spacing:.06em}
-.logout:hover{color:#fff}
-.page{max-width:1000px;margin:0 auto;padding:32px 28px}
-.page-hd{display:flex;align-items:center;justify-content:space-between;margin-bottom:24px}
-.page-title{font-family:'Barlow Condensed',sans-serif;font-weight:700;font-size:22px;text-transform:uppercase;letter-spacing:.04em}
-.btn{display:inline-flex;align-items:center;gap:7px;font-family:'Barlow Condensed',sans-serif;font-weight:900;font-size:13px;letter-spacing:.1em;text-transform:uppercase;border:none;padding:9px 22px;cursor:pointer;border-radius:3px;text-decoration:none;transition:all .13s}
-.btn-blk{background:var(--blk);color:#fff}.btn-blk:hover{background:#333}
-.btn-y{background:var(--y);color:var(--blk)}.btn-y:hover{background:#FFF176}
-.btn-sm{font-size:11px;padding:6px 13px}
-.btn-ghost{background:transparent;color:var(--grey);border:1px solid var(--bdr)}.btn-ghost:hover{color:var(--txt);border-color:#aaa}
-.btn-grn{background:#4CAF50;color:#fff}.btn-blu{background:#2196F3;color:#fff}.btn-red{background:transparent;color:#E53935;border:1px solid #FFCDD2}
+.bar{background:#111;border-bottom:3px solid #FFE600;padding:0 28px;display:flex;align-items:center;justify-content:space-between;height:56px;position:sticky;top:0;z-index:100}
+.logo{display:flex;align-items:center;gap:9px;text-decoration:none}
+.hex{width:26px;height:26px;background:#FFE600;clip-path:polygon(25% 0%,75% 0%,100% 50%,75% 100%,25% 100%,0% 50%);display:grid;place-items:center;font-family:'Barlow Condensed',sans-serif;font-weight:900;font-size:12px;color:#111}
+.lt{font-family:'Barlow Condensed',sans-serif;font-weight:700;font-size:14px;text-transform:uppercase;letter-spacing:.06em;color:#fff}
+.lt em{color:#FFE600;font-style:normal}
+.nav{display:flex;gap:4px}
+.na{color:#888;font-size:12px;font-weight:500;text-decoration:none;padding:5px 11px;border-radius:3px}
+.na:hover{color:#fff;background:rgba(255,255,255,.08)}
+.na.on{color:#FFE600;background:rgba(255,230,0,.1)}
+.out{font-size:11px;font-weight:600;color:#555;text-decoration:none;text-transform:uppercase;letter-spacing:.06em}
+.out:hover{color:#fff}
+.pg{max-width:1000px;margin:0 auto;padding:28px}
+.ph{display:flex;align-items:center;justify-content:space-between;margin-bottom:22px}
+.pt{font-family:'Barlow Condensed',sans-serif;font-weight:700;font-size:20px;text-transform:uppercase;letter-spacing:.04em}
+.btn{display:inline-flex;align-items:center;gap:6px;font-family:'Barlow Condensed',sans-serif;font-weight:900;font-size:12px;letter-spacing:.1em;text-transform:uppercase;border:none;padding:8px 18px;cursor:pointer;border-radius:3px;text-decoration:none;transition:background .12s}
+.bb{background:#111;color:#fff}.bb:hover{background:#333}
+.by{background:#FFE600;color:#111}.by:hover{background:#FFF176}
+.bs{font-size:10px;padding:5px 11px}
+.bg{background:transparent;color:var(--grey);border:1px solid var(--bdr)}.bg:hover{color:var(--txt)}
+.bgn{background:#4CAF50;color:#fff}.bbl{background:#2196F3;color:#fff}.br{background:transparent;color:#E53935;border:1px solid #FFCDD2}
 `;
 
 function shell(title, nav, body) {
   return `<!DOCTYPE html><html lang="en"><head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Prime Time — ${title}</title>
+<title>PT — ${title}</title>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Barlow+Condensed:wght@700;900&display=swap" rel="stylesheet">
-<style>${BASE_CSS}</style></head><body>
-<div class="topbar">
-  <a class="logo" href="/"><div class="hex">T</div><div class="logo-txt">Prime Time <em>Electricians</em></div></a>
-  <div class="topnav">
-    <a class="tnav ${nav==='dash'?'on':''}" href="/">Dashboard</a>
-    <a class="tnav ${nav==='new'?'on':''}" href="/new">New Report</a>
-    <a class="tnav ${nav==='upload'?'on':''}" href="/upload">Upload iAudit</a>
+<style>${CSS}</style></head><body>
+<div class="bar">
+  <a class="logo" href="/"><div class="hex">T</div><div class="lt">Prime Time <em>Electricians</em></div></a>
+  <div class="nav">
+    <a class="na ${nav==='dash'?'on':''}" href="/">Dashboard</a>
+    <a class="na ${nav==='upload'?'on':''}" href="/upload">Upload iAudit</a>
   </div>
-  <a class="logout" href="/logout">Sign Out</a>
+  <a class="out" href="/logout">Sign Out</a>
 </div>
-<div class="page">${body}</div>
+<div class="pg">${body}</div>
 </body></html>`;
 }
 
 // ── Login ─────────────────────────────────────────────────────────────────────
-app.get('/login', (req, res) => res.send(`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Prime Time Login</title>
+app.get('/login', (req,res) => res.send(`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>PT Login</title>
 <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@700;900&display=swap" rel="stylesheet">
 <style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:sans-serif;background:#111;display:flex;align-items:center;justify-content:center;min-height:100vh}
-.card{background:#fff;border-radius:6px;padding:48px 40px;width:100%;max-width:360px}
-.logo{display:flex;align-items:center;gap:10px;margin-bottom:32px;justify-content:center}
-.hex{width:34px;height:34px;background:#FFE600;clip-path:polygon(25% 0%,75% 0%,100% 50%,75% 100%,25% 100%,0% 50%);display:grid;place-items:center;font-family:'Barlow Condensed',sans-serif;font-weight:900;font-size:15px}
-.lt{font-family:'Barlow Condensed',sans-serif;font-weight:700;font-size:17px;text-transform:uppercase;letter-spacing:.05em}
+.c{background:#fff;border-radius:6px;padding:44px 38px;width:340px}
+.logo{display:flex;align-items:center;gap:9px;margin-bottom:28px;justify-content:center}
+.hex{width:32px;height:32px;background:#FFE600;clip-path:polygon(25% 0%,75% 0%,100% 50%,75% 100%,25% 100%,0% 50%);display:grid;place-items:center;font-family:'Barlow Condensed',sans-serif;font-weight:900;font-size:14px}
+.lt{font-family:'Barlow Condensed',sans-serif;font-weight:700;font-size:16px;text-transform:uppercase;letter-spacing:.05em}
 .lt em{color:#FFE600;font-style:normal}
-h1{font-family:'Barlow Condensed',sans-serif;font-weight:700;font-size:18px;text-align:center;margin-bottom:24px;text-transform:uppercase}
-label{font-size:10px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:#888;display:block;margin-bottom:5px}
-input{width:100%;background:#F8F8F8;border:1px solid #E0E0E0;border-radius:4px;font-size:14px;padding:10px 12px;outline:none;margin-bottom:16px}
-button{width:100%;background:#111;color:#fff;font-family:'Barlow Condensed',sans-serif;font-weight:900;font-size:15px;letter-spacing:.1em;text-transform:uppercase;border:none;padding:13px;cursor:pointer;border-radius:4px}
-.err{color:#E53935;font-size:12px;text-align:center;margin-top:10px}
-</style></head><body><div class="card">
+h1{font-family:'Barlow Condensed',sans-serif;font-weight:700;font-size:17px;text-align:center;margin-bottom:22px;text-transform:uppercase}
+label{font-size:10px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:#888;display:block;margin-bottom:4px}
+input{width:100%;background:#F8F8F8;border:1px solid #E0E0E0;border-radius:4px;font-size:13px;padding:9px 11px;outline:none;margin-bottom:14px}
+button{width:100%;background:#111;color:#fff;font-family:'Barlow Condensed',sans-serif;font-weight:900;font-size:14px;letter-spacing:.1em;text-transform:uppercase;border:none;padding:12px;cursor:pointer;border-radius:4px}
+.err{color:#E53935;font-size:12px;text-align:center;margin-top:8px}
+</style></head><body><div class="c">
 <div class="logo"><div class="hex">T</div><div class="lt">Prime Time <em>Electricians</em></div></div>
 <h1>Report Portal</h1>
 <form method="POST" action="/login">
-<label>Team Password</label>
-<input type="password" name="password" placeholder="Enter password" autofocus>
+<label>Password</label><input type="password" name="password" autofocus>
 <button type="submit">Sign In</button>
 <div class="err">${req.query.err?'Incorrect password':''}</div>
 </form></div></body></html>`));
 
-app.post('/login', (req, res) => {
-  req.body.password === PORTAL_PASSWORD
-    ? (req.session.authenticated=true, res.redirect('/'))
-    : res.redirect('/login?err=1');
+app.post('/login', (req,res) => {
+  if (req.body.password === PORTAL_PASSWORD) { req.session.auth=true; res.redirect('/'); }
+  else res.redirect('/login?err=1');
 });
-app.get('/logout', (req, res) => { req.session.destroy(); res.redirect('/login'); });
+app.get('/logout', (req,res) => { req.session.destroy(); res.redirect('/login'); });
 
 // ── Dashboard ─────────────────────────────────────────────────────────────────
-app.get('/', requireAuth, (req, res) => {
-  readDB();
-  const reports = [...DB.reports].sort((a,b)=>new Date(b.createdAt)-new Date(a.createdAt));
-  const badge = s => {
-    const m={pending:['#FFF8E1','#F59E0B','Pending'],approved:['#E8F5E9','#4CAF50','Approved'],sent:['#E3F2FD','#2196F3','Sent']};
-    const [bg,c,l]=m[s]||m.pending;
-    return `<span style="background:${bg};color:${c};font-size:10px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;padding:3px 8px;border-radius:2px">${l}</span>`;
-  };
-  const counts={pending:0,approved:0,sent:0};
-  reports.forEach(r=>{if(counts[r.status]!==undefined)counts[r.status]++;});
-  const rows = reports.length===0
-    ? `<tr><td colspan="6" style="text-align:center;padding:48px;color:#bbb;font-size:13px">No reports yet</td></tr>`
-    : reports.map(r=>`<tr style="border-bottom:1px solid #F5F5F5">
-        <td style="padding:13px 12px;font-size:13px;font-weight:600">${r.address||'—'}</td>
-        <td style="padding:13px 12px;font-size:12px;color:#888">${r.inspDate||'—'}</td>
-        <td style="padding:13px 12px;font-size:12px;color:#888">${r.tech||'—'}</td>
-        <td style="padding:13px 12px;font-size:12px;color:#888">${r.item||'—'}</td>
-        <td style="padding:13px 12px">${badge(r.status)}</td>
-        <td style="padding:13px 12px"><div style="display:flex;gap:5px;justify-content:flex-end;flex-wrap:wrap">
-          <a href="/edit/${r.id}" class="btn btn-ghost btn-sm">Edit</a>
-          ${r.reportText?`<a href="/download/${r.id}" class="btn btn-blk btn-sm">&#8595; PDF</a>`:''}
-          ${r.status==='pending'?`<button onclick="setStatus('${r.id}','approved')" class="btn btn-sm btn-grn">&#10003; Approve</button>`:''}
-          ${r.status==='approved'?`<button onclick="setStatus('${r.id}','sent')" class="btn btn-sm btn-blu">Mark Sent</button>`:''}
-          <button onclick="del('${r.id}')" class="btn btn-sm btn-red">&#10005;</button>
+app.get('/', requireAuth, (req,res) => {
+  const all = Object.values(REPORTS).sort((a,b)=>new Date(b.createdAt)-new Date(a.createdAt));
+  const badge = s => { const m={pending:'#F59E0B',approved:'#4CAF50',sent:'#2196F3'}; return `<span style="background:${m[s]||m.pending}22;color:${m[s]||m.pending};font-size:10px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;padding:3px 8px;border-radius:2px">${s||'pending'}</span>`; };
+  const rows = all.length===0
+    ? `<tr><td colspan="6" style="text-align:center;padding:40px;color:#bbb;font-size:13px">No reports yet — upload an iAudit PDF to get started</td></tr>`
+    : all.map(r=>`<tr style="border-bottom:1px solid #F5F5F5">
+        <td style="padding:12px;font-size:13px;font-weight:600">${r.address||'—'}</td>
+        <td style="padding:12px;font-size:12px;color:#888">${r.inspDate||'—'}</td>
+        <td style="padding:12px;font-size:12px;color:#888">${r.tech||'—'}</td>
+        <td style="padding:12px;font-size:12px;color:#888">${r.item||'—'}</td>
+        <td style="padding:12px">${badge(r.status)}</td>
+        <td style="padding:12px"><div style="display:flex;gap:5px;justify-content:flex-end;flex-wrap:wrap">
+          <a href="/edit/${r.id}" class="btn bg bs">Edit</a>
+          ${r.reportText?`<a href="/draft/${r.id}" class="btn bb bs">Draft</a>`:''}
+          ${r.status==='pending'?`<button onclick="setStatus('${r.id}','approved')" class="btn bgn bs">✓ Approve</button>`:''}
+          ${r.status==='approved'?`<button onclick="setStatus('${r.id}','sent')" class="btn bbl bs">Sent</button>`:''}
+          <button onclick="del('${r.id}')" class="btn br bs">✕</button>
         </div></td></tr>`).join('');
-
   res.send(shell('Dashboard','dash',`
-    <div class="page-hd"><div class="page-title">Reports</div>
-      <div style="display:flex;gap:8px">
-        <a href="/upload" class="btn btn-ghost">&#8593; Upload iAudit</a>
-        <a href="/new" class="btn btn-y">+ New Report</a>
-      </div></div>
-    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-bottom:24px">
-      ${[['Pending','#F59E0B',counts.pending],['Approved','#4CAF50',counts.approved],['Sent','#2196F3',counts.sent]].map(([l,c,n])=>
-        `<div style="background:#F8F8F8;border-radius:4px;padding:18px 22px;border-left:4px solid ${c}">
-          <div style="font-size:28px;font-weight:700;font-family:'Barlow Condensed',sans-serif;color:${c}">${n}</div>
-          <div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;color:#999;margin-top:4px">${l}</div>
-        </div>`).join('')}
-    </div>
-    <div style="border:1px solid var(--bdr);border-radius:4px;overflow:hidden">
+    <div class="ph"><div class="pt">Reports</div>
+      <a href="/upload" class="btn by">+ Upload iAudit</a></div>
+    <div style="border:1px solid #E0E0E0;border-radius:4px;overflow:hidden">
       <table style="width:100%;border-collapse:collapse">
         <thead><tr style="background:#F8F8F8;border-bottom:3px solid #FFE600">
-          ${['Address','Date','Technician','Item','Status','Actions'].map((h,i)=>`<th style="padding:11px 12px;text-align:${i===5?'right':'left'};font-size:10px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:#888">${h}</th>`).join('')}
-        </tr></thead>
-        <tbody>${rows}</tbody>
+          ${['Address','Date','Tech','Item','Status','Actions'].map((h,i)=>`<th style="padding:10px 12px;text-align:${i===5?'right':'left'};font-size:10px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:#888">${h}</th>`).join('')}
+        </tr></thead><tbody>${rows}</tbody>
       </table></div>
     <script>
     async function setStatus(id,s){await fetch('/api/status/'+id,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({status:s})});location.reload();}
-    async function del(id){if(!confirm('Delete?'))return;await fetch('/api/report/'+id,{method:'DELETE'});location.reload();}
+    async function del(id){if(!confirm('Delete this report?'))return;await fetch('/api/report/'+id,{method:'DELETE'});location.reload();}
     </script>`));
 });
 
 // ── Upload ────────────────────────────────────────────────────────────────────
-app.get('/upload', requireAuth, (req, res) => {
-  res.send(shell('Upload iAudit','upload',`
-    <div class="page-hd"><div class="page-title">Upload iAudit Report</div></div>
-    <div style="max-width:560px">
-      <p style="font-size:13px;color:#666;margin-bottom:22px;line-height:1.75">Upload the iAudit PDF. The portal will read all details and write the inspection findings, cause of damage, recommendation and summary — ready for your review.</p>
-      <div id="dz" style="border:2px dashed #DDD;border-radius:6px;padding:52px;text-align:center;cursor:pointer;background:#FAFAFA">
-        <div style="font-size:36px;margin-bottom:12px">&#128196;</div>
-        <div style="font-family:'Barlow Condensed',sans-serif;font-weight:700;font-size:16px;text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">Drop iAudit PDF here</div>
-        <div style="font-size:12px;color:#aaa">or click to browse</div>
-        <input type="file" id="pdfFile" accept=".pdf" style="display:none">
-      </div>
-      <div id="st" style="margin-top:14px;font-size:13px;color:#888;text-align:center;min-height:20px"></div>
-      <div id="goBtn" style="display:none;margin-top:16px">
-        <button onclick="go()" class="btn btn-blk" style="width:100%;justify-content:center;font-size:15px;padding:14px">&#9889; Extract &amp; Open Editor</button>
+app.get('/upload', requireAuth, (req,res) => res.send(shell('Upload','upload',`
+  <div class="ph"><div class="pt">Upload iAudit PDF</div></div>
+  <div style="max-width:520px">
+    <p style="font-size:13px;color:#666;margin-bottom:20px;line-height:1.7">Upload the iAudit PDF. The portal will read all details, write the inspection findings, cause of damage, recommendation and summary — ready for your review.</p>
+    <div id="dz" style="border:2px dashed #DDD;border-radius:6px;padding:48px;text-align:center;cursor:pointer;background:#FAFAFA">
+      <div style="font-size:32px;margin-bottom:10px">📄</div>
+      <div style="font-family:'Barlow Condensed',sans-serif;font-weight:700;font-size:15px;text-transform:uppercase;letter-spacing:.06em;margin-bottom:5px">Drop PDF here</div>
+      <div style="font-size:12px;color:#aaa">or click to browse</div>
+      <input type="file" id="fi" accept=".pdf" style="display:none">
+    </div>
+    <div id="st" style="margin-top:12px;font-size:13px;color:#888;text-align:center;min-height:18px"></div>
+    <div id="gb" style="display:none;margin-top:14px">
+      <button onclick="go()" class="btn bb" style="width:100%;justify-content:center;font-size:14px;padding:13px">⚡ Extract &amp; Open Editor</button>
+    </div>
+  </div>
+  <script>
+  const dz=document.getElementById('dz'),fi=document.getElementById('fi'),st=document.getElementById('st'),gb=document.getElementById('gb');
+  let file=null;
+  dz.onclick=()=>fi.click();
+  fi.onchange=e=>pick(e.target.files[0]);
+  dz.ondragover=e=>{e.preventDefault();dz.style.borderColor='#111'};
+  dz.ondragleave=()=>{dz.style.borderColor='#DDD'};
+  dz.ondrop=e=>{e.preventDefault();dz.style.borderColor='#DDD';pick(e.dataTransfer.files[0])};
+  function pick(f){if(!f||!f.name.endsWith('.pdf')){st.innerHTML='<span style="color:#E53935">Please select a PDF</span>';return;}
+    file=f;dz.style.borderColor='#4CAF50';st.innerHTML='<span style="color:#4CAF50;font-weight:600">✓ '+f.name+'</span>';gb.style.display='block';}
+  async function go(){
+    if(!file)return;
+    st.innerHTML='<span style="color:#888">Reading PDF and writing report... 20-30 seconds</span>';gb.style.display='none';
+    const fd=new FormData();fd.append('pdf',file);
+    try{
+      const res=await fetch('/api/extract',{method:'POST',body:fd});
+      const j=await res.json();
+      if(!j.ok)throw new Error(j.error);
+      st.innerHTML='<span style="color:#4CAF50;font-weight:600">✓ Done! '+j.photosFound+' photos — opening editor...</span>';
+      setTimeout(()=>location.href='/edit/'+j.id,600);
+    }catch(e){st.innerHTML='<span style="color:#E53935">✕ '+e.message+'</span>';gb.style.display='block';}
+  }
+  </script>`)));
+
+// ── Editor ────────────────────────────────────────────────────────────────────
+const ECSS = `
+.layout{display:grid;grid-template-columns:180px 1fr;gap:0;min-height:calc(100vh - 100px)}
+.sb{background:#F8F8F8;border-right:1px solid #E0E0E0;padding:8px 0}
+.sna{display:flex;align-items:center;gap:6px;padding:7px 13px;color:#aaa;font-size:12px;border-left:2px solid transparent;text-decoration:none}
+.sna:hover{color:#222;background:rgba(0,0,0,.04)}
+.sna.on{color:#111;border-left-color:#FFE600;background:rgba(255,230,0,.08);font-weight:600}
+.sg{padding:7px 13px 2px;font-size:9px;font-weight:600;letter-spacing:.14em;text-transform:uppercase;color:#ccc;margin-top:6px}
+.dot{width:4px;height:4px;border-radius:50%;background:currentColor;flex-shrink:0}
+.ed{padding:0 0 0 26px}
+.sec{margin-bottom:32px;scroll-margin-top:70px}
+.sh{display:flex;align-items:center;gap:9px;margin-bottom:14px;padding-bottom:7px;border-bottom:2px solid #FFE600}
+.sn{font-family:'Barlow Condensed',sans-serif;font-weight:900;font-size:10px;color:#ccc;letter-spacing:.08em}
+.st2{font-family:'Barlow Condensed',sans-serif;font-weight:700;font-size:15px;text-transform:uppercase;letter-spacing:.04em}
+.fg{display:grid;grid-template-columns:1fr 1fr;gap:11px}.fg.one{grid-template-columns:1fr}
+.fld{display:flex;flex-direction:column;gap:3px}
+label{font-size:10px;font-weight:600;letter-spacing:.1em;text-transform:uppercase;color:#777}
+input[type=text],textarea{background:#fff;border:1px solid #E0E0E0;border-radius:3px;color:#222;font-family:"Inter",sans-serif;font-size:13px;padding:7px 9px;width:100%;outline:none}
+input[type=text]:focus,textarea:focus{border-color:#111}
+input::placeholder,textarea::placeholder{color:#ccc}
+textarea{resize:vertical;min-height:78px;line-height:1.6}
+.ph-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.ph-wrap{display:flex;flex-direction:column;gap:3px}
+.ph-slot{background:#F8F8F8;border:1px dashed #DDD;border-radius:3px;aspect-ratio:4/3;display:flex;flex-direction:column;align-items:center;justify-content:center;cursor:pointer;position:relative;overflow:hidden}
+.ph-slot:hover{border-color:#111}.ph-slot.has{border-style:solid;border-color:#DDD}
+.ph-slot img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+.ph-ov{position:absolute;inset:0;background:rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;opacity:0;color:#fff;font-size:10px;font-weight:600;text-transform:uppercase}
+.ph-slot:hover .ph-ov{opacity:1}
+.ph-lbl{font-size:9px;font-weight:600;color:#ccc;text-transform:uppercase}.ph-plus{font-size:18px;color:#ccc}
+.ph-slot.has .ph-lbl,.ph-slot.has .ph-plus{display:none}
+.cap input{font-size:11px;padding:3px 7px;color:#aaa}
+.gbar{position:sticky;bottom:0;background:linear-gradient(to top,#fff 60%,transparent);padding:14px 0 22px;margin-top:20px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.stx{font-size:12px;color:#777;display:none}.stx.on{display:inline}.stx.ok{color:#4CAF50}.stx.err{color:#E53935}
+.hidden{display:none}
+`;
+
+app.get('/edit/:id', requireAuth, (req,res) => {
+  const r = REPORTS[req.params.id] || {};
+  const id = req.params.id;
+
+  // Embed photos directly in page as JSON — server has them in memory
+  const photoJSON = JSON.stringify((r.photos||[]).map(p=>({d:p.data||null,c:p.caption||''})));
+  const V = k => (r[k]||'').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+
+  res.send(shell('Edit Report','dash',`
+    <style>${ECSS}</style>
+    <div class="ph">
+      <div class="pt">${r.address||'Edit Report'}</div>
+      <a href="/" class="btn bg bs">← Dashboard</a>
+    </div>
+    <div class="layout">
+      <nav class="sb">
+        <div class="sg">Sections</div>
+        <a class="sna" href="#s1"><div class="dot"></div>Site Details</a>
+        <a class="sna" href="#s2"><div class="dot"></div>Unit Details</a>
+        <a class="sna" href="#s3"><div class="dot"></div>Findings</a>
+        <a class="sna" href="#s4"><div class="dot"></div>Cause</a>
+        <a class="sna" href="#s5"><div class="dot"></div>Recommendation</a>
+        <a class="sna" href="#s6"><div class="dot"></div>Summary</a>
+        <a class="sna" href="#s7"><div class="dot"></div>Photos</a>
+        <div class="sg" style="margin-top:10px">Actions</div>
+        <a class="sna" href="#" id="aWrite"><div class="dot"></div>Write Sections</a>
+        <a class="sna" href="#" id="aGen"><div class="dot"></div>Generate Report</a>
+        <a class="sna" href="#" id="aSave"><div class="dot"></div>Save Draft</a>
+      </nav>
+      <div class="ed">
+        <div class="sec" id="s1">
+          <div class="sh"><span class="sn">01</span><span class="st2">Site &amp; Inspection Details</span></div>
+          <div class="fg one"><div class="fld"><label>Property Address</label><input type="text" id="address" value="${V('address')}"></div></div><br>
+          <div class="fg">
+            <div class="fld"><label>Inspection Date</label><input type="text" id="inspDate" value="${V('inspDate')}"></div>
+            <div class="fld"><label>Inspection Time</label><input type="text" id="inspTime" value="${V('inspTime')}"></div>
+            <div class="fld"><label>Report Date</label><input type="text" id="rptDate" value="${V('rptDate')}"></div>
+            <div class="fld"><label>Insured / Person Met</label><input type="text" id="insured" value="${V('insured')}"></div>
+            <div class="fld"><label>Attending Technician</label><input type="text" id="tech" value="${V('tech')}"></div>
+          </div>
+        </div>
+        <div class="sec" id="s2">
+          <div class="sh"><span class="sn">02</span><span class="st2">Unit Details</span></div>
+          <div class="fg">
+            <div class="fld"><label>Item Inspected</label><input type="text" id="item" value="${V('item')}"></div>
+            <div class="fld"><label>Make &amp; Model</label><input type="text" id="model" value="${V('model')}"></div>
+            <div class="fld"><label>Approximate Age</label><input type="text" id="age" value="${V('age')}"></div>
+            <div class="fld"><label>Circuit Cable Size</label><input type="text" id="cable" value="${V('cable')}"></div>
+            <div class="fld"><label>Voltage</label><input type="text" id="voltage" value="${V('voltage')}"></div>
+            <div class="fld"><label>Cause (Short)</label><input type="text" id="causeS" value="${V('causeS')}"></div>
+            <div class="fld"><label>Owner Reported Date</label><input type="text" id="ownerDate" value="${V('ownerDate')}"></div>
+            <div class="fld"><label>Wear &amp; Tear Unrelated</label><input type="text" id="wearTear" value="${V('wearTear')||'No'}"></div>
+          </div>
+        </div>
+        <div class="sec" id="s3">
+          <div class="sh"><span class="sn">03</span><span class="st2">Inspection Findings</span></div>
+          <div class="fg one"><div class="fld"><label>Findings Narrative</label><textarea id="findTxt" rows="6">${r.findings||''}</textarea></div></div>
+        </div>
+        <div class="sec" id="s4">
+          <div class="sh"><span class="sn">04</span><span class="st2">Cause of Damage</span></div>
+          <div class="fg one"><div class="fld"><label>Detailed Cause</label><textarea id="causeD" rows="5">${r.causeD||''}</textarea></div></div>
+        </div>
+        <div class="sec" id="s5">
+          <div class="sh"><span class="sn">05</span><span class="st2">Repair Recommendation</span></div>
+          <div class="fg one">
+            <div class="fld"><label>Recommendation</label><textarea id="recTxt" rows="3">${r.rec||''}</textarea></div>
+            <div class="fld"><label>Repair Detail</label><textarea id="repTxt" rows="3">${r.repair||''}</textarea></div>
+          </div>
+        </div>
+        <div class="sec" id="s6">
+          <div class="sh"><span class="sn">06</span><span class="st2">Summary</span></div>
+          <div class="fg one"><div class="fld"><label>Summary Statement</label><textarea id="sumTxt" rows="5">${r.summary||''}</textarea></div></div>
+        </div>
+        <div class="sec" id="s7">
+          <div class="sh"><span class="sn">07</span><span class="st2">Site Photographs</span></div>
+          <div class="ph-grid" id="pg"></div>
+          <div id="fi2"></div>
+        </div>
+        <div class="gbar">
+          <button class="btn by" id="bWrite">✎ Write Sections</button>
+          <button class="btn bb" id="bGen">⚡ Generate Report</button>
+          <button class="btn bg bs" id="bSave">Save Draft</button>
+          <span class="stx" id="stx"></span>
+        </div>
       </div>
     </div>
     <script>
-    const dz=document.getElementById('dz'),fi=document.getElementById('pdfFile'),st=document.getElementById('st'),gb=document.getElementById('goBtn');
-    let file=null;
-    dz.onclick=()=>fi.click();
-    fi.onchange=e=>pick(e.target.files[0]);
-    dz.ondragover=e=>{e.preventDefault();dz.style.borderColor='#111'};
-    dz.ondragleave=()=>{dz.style.borderColor='#DDD'};
-    dz.ondrop=e=>{e.preventDefault();dz.style.borderColor='#DDD';pick(e.dataTransfer.files[0])};
-    function pick(f){if(!f||!f.name.endsWith('.pdf')){st.innerHTML='<span style="color:#E53935">Please select a PDF</span>';return;}
-      file=f;dz.style.borderColor='#4CAF50';st.innerHTML='<span style="color:#4CAF50;font-weight:600">&#10003; '+f.name+'</span>';gb.style.display='block';}
-    async function go(){
-      if(!file)return;
-      st.innerHTML='<span style="color:#888">Reading PDF and writing report sections... this takes 20-30 seconds</span>';
-      gb.style.display='none';
-      const fd=new FormData();fd.append('pdf',file);
-      try{
-        const res=await fetch('/api/extract',{method:'POST',body:fd});
-        const json=await res.json();
-        if(!json.ok)throw new Error(json.error);
-        // Store full report in localStorage (photos + text)
-        if(json.fullReport){
-          try{localStorage.setItem('rpt_'+json.reportId,JSON.stringify(json.fullReport));}catch(e){
-            // localStorage full — store without photos
-            try{localStorage.setItem('rpt_'+json.reportId,JSON.stringify({...json.fullReport,photos:[]}));}catch(e2){}
-          }
+    const RID=${JSON.stringify(id)};
+    const INIT=${photoJSON};
+    const PD=INIT.map(p=>p.d);
+    const PC=INIT.map((p,i)=>p.c||'Photo '+(i+1));
+    const PR=new Array(INIT.length).fill(0);
+    window._rt='';
+
+    function buildPhotos(){
+      const g=document.getElementById('pg'),f=document.getElementById('fi2');
+      g.innerHTML='';f.innerHTML='';
+      for(let i=0;i<9;i++){
+        const inp=document.createElement('input');inp.type='file';inp.accept='image/*';inp.className='hidden';inp.id='pfi'+i;
+        inp.onchange=e=>{const r=new FileReader();r.onload=ev=>{PD[i]=ev.target.result;buildPhotos();};r.readAsDataURL(e.target.files[0]);};
+        f.appendChild(inp);
+        const w=document.createElement('div');w.className='ph-wrap';
+        const s=document.createElement('div');s.className='ph-slot'+(PD[i]?' has':'');
+        s.onclick=()=>document.getElementById('pfi'+i).click();
+        s.innerHTML='<div class="ph-plus">+</div><div class="ph-lbl">Photo '+(i+1)+'</div><div class="ph-ov">Change</div>';
+        if(PD[i]){
+          const img=document.createElement('img');img.src=PD[i];s.insertBefore(img,s.firstChild);
+          const del=document.createElement('button');del.textContent='✕';
+          del.style.cssText='position:absolute;top:4px;right:4px;background:rgba(0,0,0,.7);color:#fff;border:none;border-radius:50%;width:20px;height:20px;font-size:10px;cursor:pointer;z-index:10';
+          del.onclick=e=>{e.stopPropagation();PD[i]=null;PC[i]='Photo '+(i+1);PR[i]=0;buildPhotos();};
+          s.appendChild(del);
+          const rot=document.createElement('button');rot.textContent='↻';rot.title='Rotate';
+          rot.style.cssText='position:absolute;top:4px;left:4px;background:rgba(0,0,0,.7);color:#fff;border:none;border-radius:50%;width:20px;height:20px;font-size:12px;cursor:pointer;z-index:10;line-height:1';
+          rot.onclick=e=>{e.stopPropagation();rotatePh(i);};
+          s.appendChild(rot);
         }
-        st.innerHTML='<span style="color:#4CAF50;font-weight:600">&#10003; Done! '+json.photosFound+' photos extracted — preparing report...</span>';
-        setTimeout(()=>window.location.href='/review/'+json.reportId,800);
-      }catch(e){st.innerHTML='<span style="color:#E53935">&#10005; '+e.message+'</span>';gb.style.display='block';}
+        const cw=document.createElement('div');cw.className='cap';
+        const ci=document.createElement('input');ci.type='text';ci.id='pc'+i;ci.value=PC[i];ci.placeholder='Caption';
+        cw.appendChild(ci);w.appendChild(s);w.appendChild(cw);g.appendChild(w);
+      }
+    }
+
+    function rotatePh(i){
+      if(!PD[i])return;
+      const img=new Image();
+      img.onload=function(){
+        const c=document.createElement('canvas'),deg=(PR[i]+90)%360,sw=deg===90||deg===270;
+        c.width=sw?img.height:img.width;c.height=sw?img.width:img.height;
+        const ctx=c.getContext('2d');ctx.translate(c.width/2,c.height/2);ctx.rotate(deg*Math.PI/180);
+        ctx.drawImage(img,-img.width/2,-img.height/2);
+        PD[i]=c.toDataURL('image/jpeg',0.9);PR[i]=deg;buildPhotos();
+      };img.src=PD[i];
+    }
+
+    function g(id){const el=document.getElementById(id);return el?el.value.trim():'';}
+    function collect(){
+      return{address:g('address'),inspDate:g('inspDate'),inspTime:g('inspTime'),rptDate:g('rptDate'),
+        insured:g('insured'),tech:g('tech'),item:g('item'),model:g('model'),age:g('age'),
+        cable:g('cable'),voltage:g('voltage'),causeS:g('causeS'),ownerDate:g('ownerDate'),wearTear:g('wearTear'),
+        findings:g('findTxt'),causeD:g('causeD'),rec:g('recTxt'),repair:g('repTxt'),summary:g('sumTxt'),
+        photos:PD.map((d,i)=>({data:d,caption:document.getElementById('pc'+i)?.value||'Photo '+(i+1)}))};
+    }
+
+    function status(msg,cls){const s=document.getElementById('stx');s.textContent=msg;s.className='stx on'+(cls?' '+cls:'');}
+
+    async function writeSections(){
+      document.getElementById('bWrite').textContent='Writing...';
+      status('Claude is writing the sections...');
+      try{
+        const res=await fetch('/api/write/'+RID,{method:'POST'});
+        const j=await res.json();if(!j.ok)throw new Error(j.error);
+        if(j.findings)document.getElementById('findTxt').value=j.findings;
+        if(j.causeD)document.getElementById('causeD').value=j.causeD;
+        if(j.rec)document.getElementById('recTxt').value=j.rec;
+        if(j.repair)document.getElementById('repTxt').value=j.repair;
+        if(j.summary)document.getElementById('sumTxt').value=j.summary;
+        status('Sections written — review then Generate Report','ok');
+        await save(true);
+      }catch(e){status(e.message,'err');}
+      document.getElementById('bWrite').textContent='✎ Write Sections';
+    }
+
+    async function generate(){
+      document.getElementById('bGen').textContent='Generating...';
+      status('Writing report...');
+      try{
+        const d=collect();
+        const res=await fetch('/api/generate/'+RID,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(d)});
+        const j=await res.json();if(!j.ok)throw new Error(j.error);
+        window._rt=j.text;
+        status('Saving...'); await save(true);
+        location.href='/draft/'+RID;
+      }catch(e){status(e.message,'err');}
+      document.getElementById('bGen').textContent='⚡ Generate Report';
+    }
+
+    async function save(silent){
+      const d=collect();d.reportText=window._rt||'';
+      await fetch('/api/report/'+RID,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(d)});
+      if(!silent)status('Saved','ok');
+    }
+
+    document.getElementById('bWrite').onclick=e=>{e.preventDefault();writeSections();};
+    document.getElementById('bGen').onclick=generate;
+    document.getElementById('bSave').onclick=()=>save(false);
+    document.getElementById('aWrite').onclick=e=>{e.preventDefault();writeSections();};
+    document.getElementById('aGen').onclick=e=>{e.preventDefault();generate();};
+    document.getElementById('aSave').onclick=e=>{e.preventDefault();save(false);};
+
+    buildPhotos();
+    </script>`));
+});
+
+// ── Draft Page ────────────────────────────────────────────────────────────────
+app.get('/draft/:id', requireAuth, (req,res) => {
+  const r = REPORTS[req.params.id];
+  if (!r) return res.redirect('/');
+  const esc = s => (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  const txt = (r.reportText||'')
+    .replace(/^\*?\*?Prepared (for|by):?.*$/gmi,'')
+    .replace(/^\*?\*?Client:?.*$/gmi,'')
+    .replace(/^#{1,3} [\d.]*\s*(.+)$/gm,'<h2>$1</h2>')
+    .replace(/\*\*(.+?)\*\*/g,'<strong>$1</strong>')
+    .split('\n\n').map(b=>b.startsWith('<')?b:'<p>'+esc(b)+'</p>').join('');
+
+  res.send(shell('Draft Report','dash',`
+    <style>
+    .dw{display:grid;grid-template-columns:1fr 230px;gap:22px;align-items:start}
+    .db{background:#fff;border:1px solid #E0E0E0;border-radius:4px;padding:32px 36px}
+    .db h2{font-family:'Barlow Condensed',sans-serif;font-weight:700;font-size:13px;text-transform:uppercase;letter-spacing:.08em;color:#111;margin:20px 0 7px;padding-bottom:5px;border-bottom:2px solid #FFE600}
+    .db h2:first-child{margin-top:0}.db p{font-size:13px;line-height:1.8;color:#333;margin:3px 0}
+    .dp{position:sticky;top:76px;display:flex;flex-direction:column;gap:9px}
+    .dc{background:#F8F8F8;border:1px solid #E0E0E0;border-radius:4px;padding:14px}
+    .dc h3{font-family:'Barlow Condensed',sans-serif;font-weight:700;font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:#999;margin-bottom:9px}
+    .dr{font-size:12px;color:#555;margin-bottom:5px;display:flex;justify-content:space-between}
+    .dr strong{color:#111;font-weight:600}
+    </style>
+    <div class="ph">
+      <div class="pt">Draft Report</div>
+      <div style="display:flex;gap:7px">
+        <a href="/edit/${r.id}" class="btn bg bs">← Edit</a>
+        <button onclick="exportWord()" class="btn bg">📄 Word</button>
+        <button onclick="exportPDF()" class="btn bb">↓ PDF</button>
+        <button onclick="approve()" class="btn bgn">✓ Approve</button>
+      </div>
+    </div>
+    <div class="dw">
+      <div class="db">${txt||'<p style="color:#bbb">No report text yet — go back and click Generate Report</p>'}</div>
+      <div class="dp">
+        <div class="dc">
+          <h3>Job Details</h3>
+          <div class="dr"><span>Address</span><strong>${esc(r.address)||'—'}</strong></div>
+          <div class="dr"><span>Date</span><strong>${esc(r.inspDate)||'—'}</strong></div>
+          <div class="dr"><span>Insured</span><strong>${esc(r.insured)||'—'}</strong></div>
+          <div class="dr"><span>Tech</span><strong>${esc(r.tech)||'—'}</strong></div>
+          <div class="dr"><span>Item</span><strong>${esc(r.item)||'—'}</strong></div>
+          <div class="dr"><span>Cause</span><strong>${esc(r.causeS)||'—'}</strong></div>
+        </div>
+        <div class="dc">
+          <h3>Actions</h3>
+          <a href="/edit/${r.id}" class="btn bg bs" style="width:100%;justify-content:center;margin-bottom:7px">← Back to Editor</a>
+          <button onclick="exportWord()" class="btn bg bs" style="width:100%;justify-content:center;margin-bottom:7px">📄 Word Doc</button>
+          <button onclick="exportPDF()" class="btn bb bs" style="width:100%;justify-content:center;margin-bottom:7px">↓ Export PDF</button>
+          <button onclick="approve()" class="btn bgn bs" style="width:100%;justify-content:center">✓ Approve</button>
+        </div>
+        <div id="badge" class="dc" style="text-align:center">
+          <span style="background:#FFF8E1;color:#F59E0B;font-size:10px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;padding:4px 10px;border-radius:2px">${r.status||'pending'}</span>
+        </div>
+      </div>
+    </div>
+    <script>
+    const RID=${JSON.stringify(r.id)};
+    async function exportPDF(){
+      try{
+        const res=await fetch('/api/pdf/'+RID,{method:'POST'});
+        if(!res.ok)throw new Error('PDF failed');
+        const blob=await res.blob(),url=URL.createObjectURL(blob),a=document.createElement('a');
+        a.href=url;a.download='Report_${(r.address||'Report').replace(/[^a-zA-Z0-9]+/g,'_')}'+'.pdf';a.click();URL.revokeObjectURL(url);
+      }catch(e){alert('PDF Error: '+e.message);}
+    }
+    async function exportWord(){
+      try{
+        const res=await fetch('/api/word/'+RID,{method:'POST'});
+        if(!res.ok)throw new Error('Word failed');
+        const blob=await res.blob(),url=URL.createObjectURL(blob),a=document.createElement('a');
+        a.href=url;a.download='Report_${(r.address||'Report').replace(/[^a-zA-Z0-9]+/g,'_')}'+'.docx';a.click();URL.revokeObjectURL(url);
+      }catch(e){alert('Word Error: '+e.message);}
+    }
+    async function approve(){
+      await fetch('/api/status/'+RID,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({status:'approved'})});
+      document.getElementById('badge').innerHTML='<span style="background:#E8F5E9;color:#4CAF50;font-size:10px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;padding:4px 10px;border-radius:2px">Approved</span>';
     }
     </script>`));
 });
 
-// ── Review Page — full written report after upload ────────────────────────────
-app.get('/review/:id', requireAuth, (req,res) => {
-  readDB();
-  const r = DB.reports.find(r=>r.id===req.params.id)
-    || (req.session.lastReport?.id===req.params.id ? req.session.lastReport : null);
-  if (!r) return res.redirect('/');
-
-  const esc = s => (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-
-  res.send(shell('Report Review', 'dash', `
-    <style>
-    .review-wrap{display:grid;grid-template-columns:1fr 240px;gap:24px;align-items:start}
-    .review-body{background:#fff;border:1px solid var(--bdr);border-radius:4px;overflow:hidden}
-    .review-hd{background:#111;padding:22px 28px;border-bottom:3px solid #FFE600}
-    .review-hd h1{font-family:'Barlow Condensed',sans-serif;font-weight:900;font-size:20px;text-transform:uppercase;letter-spacing:.06em;color:#fff;margin-bottom:4px}
-    .review-hd p{font-size:12px;color:#888}
-    .review-section{padding:20px 28px;border-bottom:1px solid #F0F0F0}
-    .review-section:last-child{border-bottom:none}
-    .review-section h2{font-family:'Barlow Condensed',sans-serif;font-weight:700;font-size:13px;text-transform:uppercase;letter-spacing:.08em;color:#FFE600;background:#111;display:inline-block;padding:3px 10px;border-radius:2px;margin-bottom:10px}
-    .review-section p{font-size:13px;line-height:1.85;color:#333;margin-bottom:6px}
-    .review-section .meta-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px 20px}
-    .review-section .meta-item{font-size:12px;color:#555}
-    .review-section .meta-item strong{color:#111;font-weight:600;display:block;font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:#999;margin-bottom:1px}
-    .side-panel{position:sticky;top:80px;display:flex;flex-direction:column;gap:10px}
-    .side-card{background:#F8F8F8;border:1px solid var(--bdr);border-radius:4px;padding:16px}
-    .side-card h3{font-family:'Barlow Condensed',sans-serif;font-weight:700;font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:#999;margin-bottom:10px}
-    .notice{background:#FFF8E1;border:1px solid #FFE082;border-radius:4px;padding:12px 14px;font-size:12px;color:#795548;line-height:1.6}
-    </style>
-    <div class="page-hd">
-      <div class="page-title">Report Review</div>
-      <div style="display:flex;gap:8px">
-        <a href="/edit/${r.id}" class="btn btn-y">&#9998; Edit Report</a>
-        <a href="/download/${r.id}" class="btn btn-ghost btn-sm" ${r.reportText?'':'style="opacity:.4;pointer-events:none"'}>&#8595; ${r.reportText?'Export PDF':'PDF (generate first)'}</a>
-      </div>
-    </div>
-    <div class="notice" style="margin-bottom:18px">&#128065; This is the AI-generated draft. Review each section below, then click <strong>Edit Report</strong> to make changes before generating the final PDF.</div>
-    <div class="review-wrap">
-      <div class="review-body">
-        <div class="review-hd">
-          <h1>Insurance Inspection Report</h1>
-          <p>Prime Time Electricians &nbsp;|&nbsp; Draft for Review</p>
-        </div>
-
-        <div class="review-section">
-          <h2>01 — Site &amp; Inspection Details</h2>
-          <div class="meta-grid">
-            <div class="meta-item"><strong>Property Address</strong>${esc(r.address)||'—'}</div>
-            <div class="meta-item"><strong>Inspection Date</strong>${esc(r.inspDate)||'—'}</div>
-            <div class="meta-item"><strong>Inspection Time</strong>${esc(r.inspTime)||'—'}</div>
-            <div class="meta-item"><strong>Insured</strong>${esc(r.insured)||'—'}</div>
-            <div class="meta-item"><strong>Technician</strong>${esc(r.tech)||'—'}</div>
-            <div class="meta-item"><strong>Year Built</strong>${esc(r.yearBuilt)||'—'}</div>
-            <div class="meta-item"><strong>Roof Type</strong>${esc(r.roofType)||'—'}</div>
-            <div class="meta-item"><strong>Date of Loss</strong>${esc(r.ownerDate)||'—'}</div>
-          </div>
-        </div>
-
-        <div class="review-section">
-          <h2>02 — Item Inspected</h2>
-          <div class="meta-grid">
-            <div class="meta-item"><strong>Item</strong>${esc(r.item)||'—'}</div>
-            <div class="meta-item"><strong>Make &amp; Model</strong>${esc(r.model)||'—'}</div>
-            <div class="meta-item"><strong>Approximate Age</strong>${esc(r.age)||'—'}</div>
-            <div class="meta-item"><strong>Cable Size</strong>${esc(r.cable)||'—'}</div>
-            <div class="meta-item"><strong>Voltage</strong>${esc(r.voltage)||'—'}</div>
-            <div class="meta-item"><strong>Cutout</strong>${esc(r.cutout)||'—'}</div>
-            <div class="meta-item"><strong>Cause of Damage</strong>${esc(r.causeS)||'—'}</div>
-            <div class="meta-item"><strong>Wear &amp; Tear</strong>${esc(r.wearTear)||'—'}</div>
-          </div>
-        </div>
-
-        <div class="review-section">
-          <h2>03 — Inspection Findings</h2>
-          <p>${esc(r.findings)||'<em style="color:#bbb">Not yet written — click Edit Report then Write Sections</em>'}</p>
-        </div>
-
-        <div class="review-section">
-          <h2>04 — Cause of Damage</h2>
-          <p>${esc(r.causeD)||'<em style="color:#bbb">Not yet written — click Edit Report then Write Sections</em>'}</p>
-        </div>
-
-        <div class="review-section">
-          <h2>05 — Repair Recommendation</h2>
-          <p>${esc(r.rec)||'<em style="color:#bbb">Not yet written</em>'}</p>
-          ${r.repair ? `<p>${esc(r.repair)}</p>` : ''}
-        </div>
-
-        <div class="review-section">
-          <h2>06 — Summary</h2>
-          <p>${esc(r.summary)||'<em style="color:#bbb">Not yet written</em>'}</p>
-        </div>
-
-        <div class="review-section">
-          <h2>07 — Site Photographs</h2>
-          <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:4px">
-            ${(r.photos||[]).filter(p=>p.data).slice(0,9).map(p=>`
-              <div style="border-radius:3px;overflow:hidden;aspect-ratio:4/3;background:#F8F8F8">
-                <img src="${p.data}" style="width:100%;height:100%;object-fit:cover">
-                <div style="font-size:10px;color:#888;padding:3px 6px;text-align:center">${esc(p.caption)}</div>
-              </div>`).join('')}
-          </div>
-        </div>
-      </div>
-
-      <div class="side-panel">
-        <div class="side-card">
-          <h3>Status</h3>
-          <span style="background:#FFF8E1;color:#F59E0B;font-size:10px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;padding:4px 10px;border-radius:2px">Draft</span>
-        </div>
-        <div class="side-card">
-          <h3>Next Steps</h3>
-          <a href="/edit/${r.id}" class="btn btn-y btn-sm" style="width:100%;justify-content:center;margin-bottom:8px">&#9998; Edit Report</a>
-          <a href="/" class="btn btn-ghost btn-sm" style="width:100%;justify-content:center">&#8592; Dashboard</a>
-        </div>
-        <div class="side-card" style="font-size:12px;color:#888;line-height:1.65">
-          <h3>About this draft</h3>
-          Review the AI-written sections above. Click <strong>Edit Report</strong> to refine the wording, add details or adjust any section before generating the final PDF.
-        </div>
-      </div>
-    </div>
-  `));
-});
-
-// ── Editor ────────────────────────────────────────────────────────────────────
-const EDITOR_CSS = `
-.layout{display:grid;grid-template-columns:190px 1fr;gap:0;min-height:calc(100vh - 120px)}
-.sidebar{background:#F8F8F8;border-right:1px solid var(--bdr);padding:10px 0}
-.nav-a{display:flex;align-items:center;gap:7px;padding:8px 14px;color:#aaa;font-size:12px;font-weight:500;border-left:2px solid transparent;text-decoration:none;transition:all .12s}
-.nav-a:hover{color:var(--txt);background:rgba(0,0,0,.04)}
-.nav-a.on{color:var(--blk);border-left-color:var(--y);background:rgba(255,230,0,.08);font-weight:600}
-.nav-grp{padding:8px 14px 2px;font-size:9px;font-weight:600;letter-spacing:.14em;text-transform:uppercase;color:#ccc;margin-top:6px}
-.dot{width:4px;height:4px;border-radius:50%;background:currentColor;flex-shrink:0}
-.editor{padding:0 0 0 28px}
-.sec{margin-bottom:36px;scroll-margin-top:74px}
-.sec-hd{display:flex;align-items:center;gap:10px;margin-bottom:16px;padding-bottom:8px;border-bottom:2px solid var(--y)}
-.sec-n{font-family:'Barlow Condensed',sans-serif;font-weight:900;font-size:11px;color:#ccc;letter-spacing:.08em}
-.sec-t{font-family:'Barlow Condensed',sans-serif;font-weight:700;font-size:16px;text-transform:uppercase;letter-spacing:.04em}
-.fg{display:grid;grid-template-columns:1fr 1fr;gap:12px}.fg.one{grid-template-columns:1fr}
-.fld{display:flex;flex-direction:column;gap:4px}.fld.s2{grid-column:span 2}
-.fld-hd{display:flex;align-items:center;justify-content:space-between}
-label{font-size:10px;font-weight:600;letter-spacing:.1em;text-transform:uppercase;color:var(--grey)}
-input[type=text],textarea{background:#fff;border:1px solid var(--bdr);border-radius:3px;color:var(--txt);font-family:"Inter",sans-serif;font-size:13px;padding:8px 10px;width:100%;outline:none;transition:border-color .13s}
-input[type=text]:focus,textarea:focus{border-color:var(--blk)}
-input::placeholder,textarea::placeholder{color:#ccc}
-textarea{resize:vertical;min-height:80px;line-height:1.65}
-.pills{display:flex;gap:5px}
-.pills input[type=radio]{display:none}
-.pills label{display:inline-flex;align-items:center;padding:5px 12px;background:#fff;border:1px solid var(--bdr);border-radius:3px;cursor:pointer;font-size:10px;font-weight:600;color:#aaa;letter-spacing:.08em;text-transform:uppercase;transition:all .13s}
-.pills input:checked+label{background:var(--blk);border-color:var(--blk);color:#fff}
-.na-btn{font-size:9px;font-weight:700;color:#ddd;background:none;border:1px solid #EEE;border-radius:2px;padding:2px 6px;cursor:pointer;font-family:"Inter",sans-serif;text-transform:uppercase;letter-spacing:.08em}
-.na-btn.on{background:#F0F0F0;border-color:#bbb;color:#888}
-.fld.na input[type=text],.fld.na textarea,.fld.na .pills{opacity:.3;pointer-events:none}
-.photo-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
-.ph-wrap{display:flex;flex-direction:column;gap:4px}
-.ph-slot{background:#F8F8F8;border:1px dashed #DDD;border-radius:3px;aspect-ratio:4/3;display:flex;flex-direction:column;align-items:center;justify-content:center;cursor:pointer;position:relative;overflow:hidden}
-.ph-slot:hover{border-color:var(--blk)}.ph-slot.filled{border-style:solid;border-color:#DDD}
-.ph-slot img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
-.ph-ov{position:absolute;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;opacity:0;transition:opacity .18s;font-size:10px;font-weight:600;text-transform:uppercase;color:#fff}
-.ph-slot:hover .ph-ov{opacity:1}
-.ph-n{font-size:9px;font-weight:600;color:#ccc;text-transform:uppercase}.ph-pl{font-size:20px;color:#ccc}
-.ph-slot.filled .ph-n,.ph-slot.filled .ph-pl{display:none}
-.cap-in input{font-size:11px;padding:4px 8px;color:#aaa}
-.gen-bar{position:sticky;bottom:0;background:linear-gradient(to top,#fff 65%,transparent);padding:16px 0 24px;margin-top:24px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-.rp{display:none;background:#F8F8F8;border:1px solid var(--bdr);border-radius:4px;padding:22px 26px;margin-top:16px;font-size:13px;line-height:1.8}
-.rp.show{display:block}
-.rp h2{font-family:'Barlow Condensed',sans-serif;font-weight:700;font-size:14px;text-transform:uppercase;letter-spacing:.06em;margin:20px 0 6px;padding-bottom:4px;border-bottom:2px solid var(--y)}
-.rp h2:first-child{margin-top:0}.rp p{margin:4px 0}
-.st{font-size:12px;color:var(--grey);display:none}.st.on{display:inline}.st.ok{color:#4CAF50}.st.err{color:#E53935}
-.hidden{display:none}
-`;
-
-app.get('/new', requireAuth, (req,res) => res.send(buildEditor(null, {})));
-app.get('/edit/:id', requireAuth, (req,res) => {
-  readDB();
-  let r = DB.reports.find(r=>r.id===req.params.id);
-  if (!r && req.session.lastReport?.id===req.params.id) r=req.session.lastReport;
-  console.log('Edit page — id:', req.params.id, '| found:', !!r, '| findings:', r?.findings?.substring(0,50)||'NONE');
-  res.send(buildEditor(req.params.id, r||{}));
-});
-
-function buildEditor(reportId, data) {
-  // Safely encode all text fields as JSON strings for embedding in HTML
-  const sf = k => JSON.stringify(data[k]||'');
-  // Don't embed photo data inline — too large, load via API instead
-  const photos = JSON.stringify((data.photos||[]).map(p=>({data:null,caption:p.caption||'',rotation:p.rotation||0})));
-  // Embed metadata for writeSections (no photos - too large)
-  const meta = JSON.stringify({
-    address:data.address||'', inspDate:data.inspDate||'', inspTime:data.inspTime||'',
-    insured:data.insured||'', tech:data.tech||'', item:data.item||'', model:data.model||'',
-    age:data.age||'', cable:data.cable||'', voltage:data.voltage||'', cutout:data.cutout||'',
-    causeS:data.causeS||'', wearTear:data.wearTear||'', ownerDate:data.ownerDate||'',
-    yearBuilt:data.yearBuilt||'', roofType:data.roofType||'', damageDetails:data.damageDetails||''
-  });
-
-  return shell(reportId?'Edit Report':'New Report', reportId?'dash':'new', `
-    <style>${EDITOR_CSS}</style>
-    <div class="page-hd">
-      <div class="page-title">${reportId?'Edit Report':'New Report'}</div>
-      <a href="/" class="btn btn-ghost btn-sm">&larr; Dashboard</a>
-    </div>
-    <div class="layout">
-      <nav class="sidebar">
-        <div class="nav-grp">Sections</div>
-        <a class="nav-a" href="#site"><div class="dot"></div>Site Details</a>
-        <a class="nav-a" href="#unit"><div class="dot"></div>Unit Details</a>
-        <a class="nav-a" href="#findings"><div class="dot"></div>Findings</a>
-        <a class="nav-a" href="#damage"><div class="dot"></div>Cause of Damage</a>
-        <a class="nav-a" href="#rec"><div class="dot"></div>Recommendation</a>
-        <a class="nav-a" href="#summary"><div class="dot"></div>Summary</a>
-        <a class="nav-a" href="#photos"><div class="dot"></div>Photos</a>
-        <div class="nav-grp" style="margin-top:12px">Actions</div>
-        <a class="nav-a" href="#" id="sGen"><div class="dot"></div>Generate Report</a>
-        <a class="nav-a" href="#" id="sSave"><div class="dot"></div>Save Draft</a>
-        <a class="nav-a" href="#" id="sPDF"><div class="dot"></div>Export PDF</a>
-      </nav>
-      <div class="editor">
-        <div class="sec" id="site">
-          <div class="sec-hd"><span class="sec-n">01</span><span class="sec-t">Site &amp; Inspection Details</span></div>
-          <div class="fg one"><div class="fld"><label>Property Address</label><input type="text" id="address" value=${sf('address')}></div></div><br>
-          <div class="fg">
-            <div class="fld"><label>Inspection Date</label><input type="text" id="inspDate" value=${sf('inspDate')}></div>
-            <div class="fld"><label>Inspection Time</label><input type="text" id="inspTime" value=${sf('inspTime')}></div>
-            <div class="fld"><label>Report Date</label><input type="text" id="rptDate" value=${sf('rptDate')}></div>
-            <div class="fld"><label>Insured / Person Met</label><input type="text" id="insured" value=${sf('insured')}></div>
-            <div class="fld"><label>Attending Technician</label><input type="text" id="tech" value=${sf('tech')}></div>
-            <div class="fld"><label>Tech Signature Date</label><input type="text" id="techSig" value=${sf('techSig')}></div>
-          </div>
-        </div>
-        <div class="sec" id="unit">
-          <div class="sec-hd"><span class="sec-n">02</span><span class="sec-t">Unit Details</span></div>
-          <div class="fg">
-            <div class="fld" id="fld-item"><div class="fld-hd"><label>Item Inspected</label><button class="na-btn" onclick="na('item')">N/A</button></div><input type="text" id="item" value=${sf('item')}></div>
-            <div class="fld" id="fld-model"><div class="fld-hd"><label>Make &amp; Model</label><button class="na-btn" onclick="na('model')">N/A</button></div><input type="text" id="model" value=${sf('model')}></div>
-            <div class="fld" id="fld-age"><div class="fld-hd"><label>Approximate Age</label><button class="na-btn" onclick="na('age')">N/A</button></div><input type="text" id="age" value=${sf('age')}></div>
-            <div class="fld" id="fld-fault"><div class="fld-hd"><label>Fault Code</label><button class="na-btn" onclick="na('fault')">N/A</button></div><input type="text" id="fault" value=${sf('fault')}></div>
-            <div class="fld" id="fld-cable"><div class="fld-hd"><label>Circuit Cable Size</label><button class="na-btn" onclick="na('cable')">N/A</button></div><input type="text" id="cable" value=${sf('cable')}></div>
-            <div class="fld" id="fld-ownerDate"><div class="fld-hd"><label>Owner Reported Date</label><button class="na-btn" onclick="na('ownerDate')">N/A</button></div><input type="text" id="ownerDate" value=${sf('ownerDate')}></div>
-            <div class="fld" id="fld-wt"><div class="fld-hd"><label>Wear &amp; Tear (unrelated)</label><button class="na-btn" onclick="na('wt')">N/A</button></div>
-              <div class="pills"><input type="radio" name="wt" id="wtN" value="No" ${(data.wearTear||'').toLowerCase().includes('no')||!data.wearTear?'checked':''}><label for="wtN">None</label><input type="radio" name="wt" id="wtY" value="Yes" ${(data.wearTear||'').toLowerCase().includes('yes')?'checked':''}><label for="wtY">Present</label></div></div>
-          </div>
-        </div>
-        <div class="sec" id="findings">
-          <div class="sec-hd"><span class="sec-n">03</span><span class="sec-t">Inspection Findings</span></div>
-          <div class="fg one"><div class="fld"><label>Findings Narrative</label><textarea id="findTxt" rows="6">${data.findings||''}</textarea></div></div>
-        </div>
-        <div class="sec" id="damage">
-          <div class="sec-hd"><span class="sec-n">04</span><span class="sec-t">Cause of Damage</span></div>
-          <div class="fg">
-            <div class="fld"><label>Cause (Short)</label><input type="text" id="causeS" value=${sf('causeS')}></div>
-            <div class="fld s2"><label>Detailed Cause</label><textarea id="causeD" rows="4">${data.causeD||''}</textarea></div>
-          </div>
-        </div>
-        <div class="sec" id="rec">
-          <div class="sec-hd"><span class="sec-n">05</span><span class="sec-t">Repair Recommendation</span></div>
-          <div class="fg one">
-            <div class="fld"><label>Recommendation</label><textarea id="recTxt" rows="3">${data.rec||''}</textarea></div>
-            <div class="fld"><label>Repair Detail</label><textarea id="repTxt" rows="3">${data.repair||''}</textarea></div>
-          </div>
-        </div>
-        <div class="sec" id="summary">
-          <div class="sec-hd"><span class="sec-n">06</span><span class="sec-t">Summary</span></div>
-          <div class="fg one"><div class="fld"><label>Summary Statement</label><textarea id="sumTxt" rows="5">${data.summary||''}</textarea></div></div>
-        </div>
-        <div class="sec" id="photos">
-          <div class="sec-hd"><span class="sec-n">07</span><span class="sec-t">Site Photographs</span></div>
-          <div class="photo-grid" id="photoGrid"></div>
-          <div id="fileInputs"></div>
-        </div>
-        <div class="rp" id="rp"></div>
-        <div class="gen-bar">
-          <button class="btn btn-y" id="writeBtn">&#9998; Write Sections</button>
-          <button class="btn btn-blk" id="genBtn">&#9889; Generate Report</button>
-          <button class="btn btn-y" id="pdfBtn" style="display:none">&#8595; Export PDF</button>
-          <button class="btn btn-ghost btn-sm" id="saveBtn">Save Draft</button>
-          <span class="st" id="st"></span>
-        </div>
-      </div>
-    </div>
-    <script>
-    const REPORT_ID=${JSON.stringify(reportId||null)};
-    const META=${meta};
-    const LABELS=["Front of House","Overview Angle 1","Overview Angle 2","Failed Area","Item Overview","Brand/Model Plate","Close Up 1","Close Up 2","Services"];
-    const photoData=${photos}.map(p=>p.data?p.data:null);
-    const photoCaptions=${photos}.map((p,i)=>p.caption||LABELS[i]||'Photo '+(i+1));
-    const photoRotation=${photos}.map(p=>p.rotation||0);
-    const naState={};
-    window._rt='';
-
-    function na(id){
-      const fld=document.getElementById('fld-'+id);if(!fld)return;
-      naState[id]=!naState[id];
-      fld.classList.toggle('na',naState[id]);
-      const btn=fld.querySelector('.na-btn');if(btn)btn.classList.toggle('on',naState[id]);
-    }
-
-    function rotatePh(i,e){
-      e.stopPropagation();
-      photoRotation[i]=(photoRotation[i]+90)%360;
-      const img=new Image();
-      img.onload=function(){
-        const c=document.createElement('canvas'),r=photoRotation[i],sw=r===90||r===270;
-        c.width=sw?img.height:img.width;c.height=sw?img.width:img.height;
-        const ctx=c.getContext('2d');
-        ctx.translate(c.width/2,c.height/2);ctx.rotate(r*Math.PI/180);
-        ctx.drawImage(img,-img.width/2,-img.height/2);
-        photoData[i]=c.toDataURL('image/jpeg',0.92);buildPhotos();
-      };img.src=photoData[i];
-    }
-
-    function buildPhotos(){
-      const grid=document.getElementById('photoGrid'),fi=document.getElementById('fileInputs');
-      grid.innerHTML='';fi.innerHTML='';
-      LABELS.forEach((lbl,i)=>{
-        const inp=document.createElement('input');inp.type='file';inp.accept='image/*';inp.className='hidden';inp.id='fi'+i;
-        inp.onchange=e=>loadPh(e,i);fi.appendChild(inp);
-        const wrap=document.createElement('div');wrap.className='ph-wrap';
-        const slot=document.createElement('div');slot.className='ph-slot';
-        slot.onclick=()=>document.getElementById('fi'+i).click();
-        slot.innerHTML='<div class="ph-pl">+</div><div class="ph-n">Photo '+(i+1)+'</div><div class="ph-ov">Change</div>';
-        if(photoData[i]){
-          slot.classList.add('filled');
-          const img=document.createElement('img');img.src=photoData[i];slot.insertBefore(img,slot.firstChild);
-          const del=document.createElement('button');del.textContent='x';
-          del.style.cssText='position:absolute;top:4px;right:4px;background:rgba(0,0,0,.7);color:#fff;border:none;border-radius:50%;width:22px;height:22px;font-size:11px;cursor:pointer;z-index:10';
-          del.onclick=e=>{e.stopPropagation();photoData[i]=null;photoCaptions[i]=LABELS[i]||'Photo '+(i+1);photoRotation[i]=0;buildPhotos();};
-          slot.appendChild(del);
-          const rot=document.createElement('button');rot.textContent='\u21bb';rot.title='Rotate';
-          rot.style.cssText='position:absolute;top:4px;left:4px;background:rgba(0,0,0,.7);color:#fff;border:none;border-radius:50%;width:22px;height:22px;font-size:13px;cursor:pointer;z-index:10;line-height:1';
-          rot.onclick=e=>rotatePh(i,e);slot.appendChild(rot);
-        }
-        const cw=document.createElement('div');cw.className='cap-in';
-        const ci=document.createElement('input');ci.type='text';ci.id='cap'+i;ci.value=photoCaptions[i];ci.placeholder=lbl;
-        cw.appendChild(ci);wrap.appendChild(slot);wrap.appendChild(cw);grid.appendChild(wrap);
-      });
-    }
-
-    function loadPh(e,i){const f=e.target.files[0];if(!f)return;const r=new FileReader();r.onload=ev=>{photoData[i]=ev.target.result;buildPhotos();};r.readAsDataURL(f);}
-
-    const g=id=>{const el=document.getElementById(id);if(!el)return'';const f=el.closest('.fld');if(f&&f.classList.contains('na'))return'N/A';return el.value?.trim()||'';};
-    const radio=n=>{const c=document.querySelector('input[name="'+n+'"]:checked');return c?c.value:'';};
-    function collect(){return{address:g('address'),inspDate:g('inspDate'),inspTime:g('inspTime'),rptDate:g('rptDate'),insured:g('insured'),tech:g('tech'),techSig:g('techSig'),item:g('item'),model:g('model'),age:g('age'),fault:g('fault'),cable:g('cable'),ownerDate:g('ownerDate'),wearTear:radio('wt'),findings:g('findTxt'),causeS:g('causeS'),causeD:g('causeD'),rec:g('recTxt'),repair:g('repTxt'),summary:g('sumTxt'),photos:photoData.map((d,i)=>({data:d,caption:document.getElementById('cap'+i)?.value||LABELS[i],rotation:photoRotation[i]||0}))};}
-
-    async function generate(){
-      const d=collect(),btn=document.getElementById('genBtn'),st=document.getElementById('st'),rp=document.getElementById('rp'),pdf=document.getElementById('pdfBtn');
-      btn.textContent='Generating...';st.className='st on';st.textContent='Writing report...';rp.className='rp';pdf.style.display='none';window._rt='';
-      try{
-        const res=await fetch('/api/generate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(d)});
-        const json=await res.json();if(!json.ok)throw new Error(json.error);
-        const cleaned=json.text.replace(/^\*?\*?Prepared (for|by):?.*$/gmi,'').replace(/^\*?\*?Client:?.*$/gmi,'').trim();
-        window._rt=cleaned;
-        st.textContent='Saving...';
-        // Get photos from localStorage since photoData may be empty
-        let fullPhotos=d.photos;
-        try{
-          const stored=localStorage.getItem('rpt_'+REPORT_ID);
-          if(stored){const sd=JSON.parse(stored);if(sd.photos&&sd.photos.some(p=>p&&p.data))fullPhotos=sd.photos;}
-        }catch(e){}
-        d.photos=fullPhotos;
-        d.reportText=cleaned;
-        const url=REPORT_ID?'/api/report/'+REPORT_ID:'/api/report';
-        const sr=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(d)});
-        const sj=await sr.json();
-        const reportId=REPORT_ID||sj.id;
-        if(reportId){
-          window.location.href='/draft/'+reportId;
-        } else {
-          st.className='st on err';st.textContent='Saved but no ID — check dashboard';
-        }
-      }catch(e){st.className='st on err';st.textContent='Error: '+e.message;}
-      btn.textContent='Generate Report';
-    }
-
-    async function exportPDF(){
-      if(!window._rt){alert('Generate the report first.');return;}
-      const d=collect(),btn=document.getElementById('pdfBtn'),st=document.getElementById('st');
-      btn.textContent='Building PDF...';
-      try{
-        const res=await fetch('/api/pdf',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({reportText:window._rt,photos:d.photos,address:d.address})});
-        if(!res.ok)throw new Error('PDF failed');
-        const blob=await res.blob(),url=URL.createObjectURL(blob),a=document.createElement('a');
-        a.href=url;a.download='Report_'+(d.address||'Report').replace(/[^a-zA-Z0-9]+/g,'_')+'.pdf';a.click();URL.revokeObjectURL(url);
-        st.className='st on ok';st.textContent='PDF downloaded';
-      }catch(e){st.className='st on err';st.textContent='Error: '+e.message;}
-      btn.textContent='Export PDF';
-    }
-
-    async function writeSections(){
-      const d=collect(),btn=document.getElementById('writeBtn'),st=document.getElementById('st');
-      btn.textContent='Writing...';st.className='st on';st.textContent='Claude is writing the report sections — please wait...';
-      try{
-        // Merge META (extracted fields) with current form values
-        const fullData={...META,...d};
-        const res=await fetch('/api/write-sections',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(fullData)});
-        const json=await res.json();
-        if(!json.ok)throw new Error(json.error);
-        if(json.findings){document.getElementById('findTxt').value=json.findings;}
-        if(json.causeD){document.getElementById('causeD').value=json.causeD;}
-        if(json.rec){document.getElementById('recTxt').value=json.rec;}
-        if(json.repair){document.getElementById('repTxt').value=json.repair;}
-        if(json.summary){document.getElementById('sumTxt').value=json.summary;}
-        st.className='st on ok';st.textContent='Done — review each section then click Generate Report';
-        saveDraft(true);
-      }catch(e){st.className='st on err';st.textContent='Error: '+e.message;}
-      btn.textContent='\u9998 Write Sections';
-    }
-
-    document.getElementById('writeBtn').onclick=writeSections;
-    document.getElementById('pdfBtn').onclick=exportPDF;
-    document.getElementById('saveBtn').onclick=()=>saveDraft(false);
-    document.getElementById('genBtn').onclick=generate;
-    document.getElementById('sGen').onclick=e=>{e.preventDefault();generate();};
-    document.getElementById('sSave').onclick=e=>{e.preventDefault();saveDraft(false);};
-    document.getElementById('sPDF').onclick=e=>{e.preventDefault();exportPDF();};
-
-    // Load report data from localStorage (stored during upload)
-    if(REPORT_ID){
-      try{
-        const stored=localStorage.getItem('rpt_'+REPORT_ID);
-        if(stored){
-          const sd=JSON.parse(stored);
-          // Fill text fields
-          const MAP={address:'address',inspDate:'inspDate',inspTime:'inspTime',rptDate:'rptDate',insured:'insured',tech:'tech',item:'item',model:'model',age:'age',fault:'fault',cable:'cable',ownerDate:'ownerDate',causeS:'causeS',findings:'findTxt',causeD:'causeD',rec:'recTxt',repair:'repTxt',summary:'sumTxt'};
-          Object.entries(MAP).forEach(([from,to])=>{const el=document.getElementById(to);if(el&&sd[from])el.value=sd[from];});
-          // Load photos
-          if(sd.photos){sd.photos.forEach((p,i)=>{if(p&&p.data){photoData[i]=p.data;photoCaptions[i]=p.caption||LABELS[i];}});}
-        }
-      }catch(e){console.log('localStorage load failed:',e);}
-      buildPhotos();
-    } else {
-      buildPhotos();
-    }
-    </script>`);
-}
-
 // ── Extract PDF ───────────────────────────────────────────────────────────────
-app.post('/api/extract', requireAuth, upload.single('pdf'), async (req, res) => {
+app.post('/api/extract', requireAuth, upload.single('pdf'), async (req,res) => {
   try {
-    // Extract text from PDF first — much smaller than sending base64
     const pdfData = await pdfParse(req.file.buffer);
-    const pdfText = pdfData.text.substring(0, 8000);
+    const text = pdfData.text.substring(0,8000);
 
-    // Send just the text to Claude — avoids rate limit from large PDF base64
-    let data = {};
-    try {
-      const prompt = `You are processing an iAudit insurance inspection report for Prime Time Electricians.
-
-IMPORTANT: This PDF has a table format with LABELS on the left and VALUES on the right. Extract the VALUES not the labels.
-
-Examples:
-- "Site Address" is a label — the value is the actual address like "43 Camberwarra Dr, Craigie WA 6025"
-- "Full Name of Person you met with" is a label — value is the person's name like "Georgia Kidd"
-- "Item name" is a label — value is like "Switchboard RCBOs" or "Consumer & sub mains"
-- "Make and Model" is a label — value is the actual brand
-- "Damage is the Caused By ?" is a label — value is like "Water Ingress" or "Storm Surge"
-- "Details of damage" is a label — value is the paragraph of technician notes below it
+    // Extract structured fields
+    const extracted = await claude([{role:'user',content:`Extract fields from this iAudit PDF. Return ONLY valid JSON.
+The PDF has labels on the left and values on the right. Extract the VALUES not the labels.
 
 PDF TEXT:
-${pdfText}
+${text}
 
-Return ONLY valid JSON — no markdown:
-{
-  "address": "actual street address value",
-  "inspDate": "actual date e.g. 8 May 2026",
-  "inspTime": "actual time e.g. 10:59 AWST",
-  "rptDate": "same as inspDate",
-  "insured": "actual person name",
-  "tech": "actual technician name",
-  "item": "actual item name e.g. Switchboard RCBOs",
-  "model": "actual make and model",
-  "age": "actual age value",
-  "fault": "actual fault codes or empty",
-  "cable": "actual cable size",
-  "voltage": "actual voltage value",
-  "cutout": "actual measurements",
-  "ownerDate": "actual date of loss",
-  "causeS": "actual cause e.g. Water Ingress",
-  "wearTear": "No or Yes or N/A",
-  "yearBuilt": "actual year",
-  "roofType": "actual roof type",
-  "damageDetails": "full verbatim text from Details of damage field",
-  "findings": "3-4 professional sentences: property description, what was inspected, condition found, measurements taken",
-  "causeD": "3-4 professional sentences: use Details of damage notes to explain exactly what happened, what failed, why unsafe",
-  "rec": "1-2 sentences: recommend full replacement or repair and why",
-  "repair": "1 sentence: specifically what work must be done",
-  "summary": "3-4 sentences on item inspected, cause and outcome. Do NOT repeat the address or year built."
-}`;
+Return ONLY this JSON:
+{"address":"actual street address","inspDate":"e.g. 8 May 2026","inspTime":"e.g. 10:59 AWST","rptDate":"same as inspDate","insured":"person name","tech":"technician name","item":"actual item name","model":"actual make/model","age":"actual age","cable":"actual cable size","voltage":"actual voltage","cutout":"actual measurements","ownerDate":"date of loss","causeS":"actual cause e.g. Water Ingress","wearTear":"No or Yes","yearBuilt":"year","roofType":"roof type","damageDetails":"verbatim Details of damage text"}`}], 1200);
 
-      const text = await callClaude([{ role: 'user', content: prompt }], 2000);
-      console.log('Claude response (300):', text.substring(0, 300));
-      const m = text.match(/\{[\s\S]*\}/);
-      if (m) {
-        data = JSON.parse(m[0]);
-        console.log('Extracted OK — address:', data.address, '| findings length:', data.findings?.length);
-      } else {
-        console.error('No JSON found in response');
-      }
-    } catch(e) {
-      console.error('Extraction failed:', e.message);
-    }
+    let data = {};
+    try { const m=extracted.match(/\{[\s\S]*\}/); if(m) data=JSON.parse(m[0]); } catch(e) {}
+    console.log('Extracted — address:', data.address, '| cause:', data.causeS);
 
-
-    // Extract photos
+    // Extract photos from PDF
     const pdfDoc = await PDFLib.load(req.file.buffer, {ignoreEncryption:true});
     const rawPhotos = [];
-    for (const [ref, obj] of pdfDoc.context.enumerateIndirectObjects()) {
+    for (const [,obj] of pdfDoc.context.enumerateIndirectObjects()) {
       try {
         if (obj?.dict) {
           const sub = obj.dict.get(pdfDoc.context.obj('Subtype'));
           if (sub?.toString()==='/Image') {
             const w=parseInt(obj.dict.get(pdfDoc.context.obj('Width'))?.toString()||'0');
             const h=parseInt(obj.dict.get(pdfDoc.context.obj('Height'))?.toString()||'0');
-            if (w<150||h<150) continue;
+            if (w<100||h<100) continue;
             const bytes=obj.contents;
-            if (!bytes||bytes.length<2000) continue;
+            if (!bytes||bytes.length<1000) continue;
             const isJpeg=obj.dict.get(pdfDoc.context.obj('Filter'))?.toString().includes('DCT');
-            rawPhotos.push({data:`data:${isJpeg?'image/jpeg':'image/png'};base64,`+Buffer.from(bytes).toString('base64'),mime:isJpeg?'image/jpeg':'image/png'});
-            if (rawPhotos.length>=9) break;
+            rawPhotos.push({data:`data:${isJpeg?'image/jpeg':'image/png'};base64,`+Buffer.from(bytes).toString('base64'),caption:'Photo '+(rawPhotos.length+1)});
+            if (rawPhotos.length>=16) break;
           }
         }
       } catch(e) {}
     }
 
-    // Label photos
-    let photos = rawPhotos.map((p,i)=>({data:p.data,caption:'Photo '+(i+1),rotation:0}));
-    if (rawPhotos.length>0) {
+    // Label photos with Claude vision
+    if (rawPhotos.length > 0) {
       try {
-        const imgContent = rawPhotos.slice(0,9).flatMap((p,i)=>[
-          {type:'text',text:`Photo ${i+1}:`},
-          {type:'image',source:{type:'base64',media_type:p.mime,data:p.data.split(',')[1]}}
+        const imgs = rawPhotos.slice(0,9).flatMap((p,i)=>[
+          {type:'text',text:'Photo '+(i+1)+':'},
+          {type:'image',source:{type:'base64',media_type:p.data.startsWith('data:image/jpeg')?'image/jpeg':'image/png',data:p.data.split(',')[1]}}
         ]);
-        imgContent.push({type:'text',text:'Label each photo 3-5 words. Return only a JSON array e.g. ["Front of house","Switchboard"]'});
-        const captionText = await callClaude([{role:'user',content:imgContent}], 300);
-        const captions = JSON.parse(captionText.match(/\[[\s\S]*\]/)?.[0]||'[]');
-        photos = rawPhotos.map((p,i)=>({data:p.data,caption:captions[i]||'Photo '+(i+1),rotation:0}));
+        imgs.push({type:'text',text:'Label each photo 3-5 words. Return only a JSON array.'});
+        const caps = await claude([{role:'user',content:imgs}], 300);
+        const arr = JSON.parse(caps.match(/\[[\s\S]*\]/)?.[0]||'[]');
+        arr.forEach((c,i)=>{ if(rawPhotos[i]) rawPhotos[i].caption=c; });
       } catch(e) {}
     }
-    // Pad to 9
-    while (photos.length<9) photos.push({data:null,caption:'Photo '+(photos.length+1),rotation:0});
+
+    const photos = Array.from({length:9},(_,i)=>rawPhotos[i]||{data:null,caption:'Photo '+(i+1)});
 
     const report = {
       id: uuid(),
@@ -785,504 +594,242 @@ Return ONLY valid JSON — no markdown:
       reportText: ''
     };
 
-    readDB();
-    DB.reports.push(report);
-    writeDB();
-    req.session.lastReport = report;
-    await new Promise(resolve => req.session.save(resolve));
-    console.log('Report saved — id:', report.id, '| findings:', report.findings?.substring(0,60)||'NONE');
+    saveReport(report);
+    res.json({ok:true, id:report.id, photosFound:rawPhotos.length});
 
-    // Return text-only data for sessionStorage (photos too large)
-    const textData = {...report, photos: report.photos.map(p=>({data:null,caption:p.caption,rotation:p.rotation||0}))};
-    res.json({ok:true, reportId:report.id, photosFound:rawPhotos.length, textData, fullReport:report});
-
-  } catch(err) {
-    console.error('Extract error:', err);
-    res.status(500).json({ok:false, error:err.message});
-  }
-});
-
-// ── CRUD ──────────────────────────────────────────────────────────────────────
-app.get('/api/report/:id', requireAuth, (req,res) => {
-  readDB();
-  let r = DB.reports.find(r=>r.id===req.params.id);
-  if (!r && req.session.lastReport?.id===req.params.id) r=req.session.lastReport;
-  if (!r) return res.status(404).json(null);
-  res.json(r);
-});
-
-app.post('/api/report', requireAuth, (req,res) => {
-  readDB();
-  const r={id:uuid(),createdAt:new Date().toISOString(),status:'pending',...req.body};
-  DB.reports.push(r);writeDB();
-  res.json({ok:true,id:r.id});
-});
-
-app.post('/api/report/:id', requireAuth, (req,res) => {
-  readDB();
-  const i=DB.reports.findIndex(r=>r.id===req.params.id);
-  if (i===-1) DB.reports.push({id:req.params.id,createdAt:new Date().toISOString(),status:'pending',...req.body});
-  else DB.reports[i]={...DB.reports[i],...req.body,id:req.params.id};
-  writeDB();res.json({ok:true});
-});
-
-app.post('/api/status/:id', requireAuth, (req,res) => {
-  readDB();
-  const r=DB.reports.find(r=>r.id===req.params.id);
-  if (r){r.status=req.body.status;writeDB();}
-  res.json({ok:true});
-});
-
-app.delete('/api/report/:id', requireAuth, (req,res) => {
-  readDB();
-  DB.reports=DB.reports.filter(r=>r.id!==req.params.id);
-  writeDB();res.json({ok:true});
-});
-
-// ── Generate ──────────────────────────────────────────────────────────────────
-const isNA=v=>!v||['','na','n/a','-','none','nil'].includes(String(v).trim().toLowerCase());
-const fl=(l,v)=>isNA(v)?null:`${l}: ${v}`;
-
-app.post('/api/generate', requireAuth, async (req,res) => {
-  const d=req.body;
-  const cause=[d.causeS,d.causeD].filter(v=>!isNA(v)).join(' — ');
-  const prompt=`Write a professional insurance inspection report for Prime Time Electricians. Formal prose, ## headings only.
-
-RULES:
-- Do NOT include any "Prepared for:", "Prepared by:", "Client:", or similar header lines
-- Do NOT repeat the property address or year built in the Summary section
-- Do NOT repeat the item age in the Summary
-- Write in formal third-person prose
-- Start directly with ## 1. Site & Inspection Details
-
-SITE: ${d.address} | ${d.inspDate} ${d.inspTime||''} | Insured: ${d.insured||''} | Tech: ${d.tech||''}
-ITEM: ${[fl('Item',d.item),fl('Model',d.model),fl('Age',d.age),fl('Cable',d.cable),fl('Fault',d.fault)].filter(Boolean).join(', ')||'Not provided'}
-FINDINGS: ${d.findings||'Not provided'}
-CAUSE: ${cause||'Not provided'}
-RECOMMENDATION: ${[d.rec,d.repair].filter(v=>!isNA(v)).join(' ')||'Not provided'}
-SUMMARY: ${d.summary||'Not provided'}
-
-Sections: ## 1. Site & Inspection Details  ## 2. Item Inspected  ## 3. Inspection Findings  ## 4. Cause of Damage  ## 5. Repair Recommendation  ## 6. Summary`;
-  try {
-    const text=await callClaude([{role:'user',content:prompt}],2000);
-    res.json({ok:true,text});
   } catch(e) {
-    res.status(500).json({ok:false,error:e.message});
-  }
-});
-
-// ── Draft Report Page ─────────────────────────────────────────────────────────
-app.get('/draft/:id', requireAuth, (req,res) => {
-  readDB();
-  const r = DB.reports.find(r=>r.id===req.params.id)
-    || (req.session.lastReport?.id===req.params.id ? req.session.lastReport : null);
-  if (!r) return res.redirect('/');
-
-  const reportHtml = (r.reportText||'No report generated yet.')
-    .replace(/^## \d+\.\s*(.+)$/gm, '<h2>$1</h2>')
-    .replace(/^## (.+)$/gm, '<h2>$1</h2>')
-    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-    .split('\n\n')
-    .map(b => b.startsWith('<') ? b : '<p>' + b.replace(/\n/g,' ') + '</p>')
-    .join('\n');
-
-  res.send(shell('Draft Report', 'dash', `
-    <style>
-    .draft-wrap{display:grid;grid-template-columns:1fr 260px;gap:28px;align-items:start}
-    .draft-body{background:#fff;border:1px solid var(--bdr);border-radius:4px;padding:36px 40px}
-    .draft-body h2{font-family:'Barlow Condensed',sans-serif;font-weight:700;font-size:14px;text-transform:uppercase;letter-spacing:.06em;color:var(--blk);margin:24px 0 8px;padding-bottom:6px;border-bottom:2px solid #FFE600}
-    .draft-body h2:first-child{margin-top:0}
-    .draft-body p{font-size:13px;line-height:1.8;color:#333;margin:4px 0}
-    .draft-body strong{font-weight:600;color:#111}
-    .side-panel{position:sticky;top:80px;display:flex;flex-direction:column;gap:10px}
-    .side-card{background:#F8F8F8;border:1px solid var(--bdr);border-radius:4px;padding:18px}
-    .side-card h3{font-family:'Barlow Condensed',sans-serif;font-weight:700;font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:#999;margin-bottom:12px}
-    .meta-row{font-size:12px;color:#555;margin-bottom:6px;display:flex;justify-content:space-between}
-    .meta-row strong{color:#111;font-weight:600}
-    .status-badge{display:inline-block;background:#FFF8E1;color:#F59E0B;font-size:10px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;padding:4px 10px;border-radius:2px}
-    </style>
-    <div class="page-hd">
-      <div class="page-title">Draft Report</div>
-      <div style="display:flex;gap:8px">
-        <a href="/edit/${r.id}" class="btn btn-ghost btn-sm">&larr; Back to Editor</a>
-        <button onclick="exportWord()" class="btn btn-ghost">&#128196; Word Doc</button>
-        <button onclick="exportPDF()" class="btn btn-blk">&#8595; Export PDF</button>
-        <button onclick="approve('${r.id}')" class="btn btn-grn">&#10003; Approve</button>
-      </div>
-    </div>
-    <div class="draft-wrap">
-      <div class="draft-body">
-        ${reportHtml}
-      </div>
-      <div class="side-panel">
-        <div class="side-card">
-          <h3>Job Details</h3>
-          <div class="meta-row"><span>Address</span><strong>${r.address||'—'}</strong></div>
-          <div class="meta-row"><span>Date</span><strong>${r.inspDate||'—'}</strong></div>
-          <div class="meta-row"><span>Insured</span><strong>${r.insured||'—'}</strong></div>
-          <div class="meta-row"><span>Tech</span><strong>${r.tech||'—'}</strong></div>
-          <div class="meta-row"><span>Item</span><strong>${r.item||'—'}</strong></div>
-          <div class="meta-row"><span>Cause</span><strong>${r.causeS||'—'}</strong></div>
-        </div>
-        <div class="side-card">
-          <h3>Status</h3>
-          <div class="status-badge" id="badge">${r.status||'pending'}</div>
-        </div>
-        <div class="side-card">
-          <h3>Actions</h3>
-          <a href="/edit/${r.id}" class="btn btn-ghost btn-sm" style="width:100%;justify-content:center;margin-bottom:8px">Edit Sections</a>
-          <button onclick="exportPDF()" class="btn btn-blk btn-sm" style="width:100%;justify-content:center;margin-bottom:8px">&#8595; Export PDF</button>
-          <button onclick="approve('${r.id}')" class="btn btn-grn btn-sm" style="width:100%;justify-content:center">&#10003; Approve Report</button>
-        </div>
-      </div>
-    </div>
-    <script>
-    const REPORT_TEXT=${JSON.stringify(r.reportText||'')};
-    const REPORT_ADDR=${JSON.stringify(r.address||'')};
-    const REPORT_ID=${JSON.stringify(r.id)};
-    // Load photos from localStorage
-    let REPORT_PHOTOS=[];
-    try{const s=localStorage.getItem('rpt_'+REPORT_ID);if(s){const d=JSON.parse(s);if(d.photos)REPORT_PHOTOS=d.photos;}}catch(e){}
-
-    async function exportWord(){
-      if(!REPORT_TEXT){alert('No report text — generate first.');return;}
-      try{
-        const res=await fetch('/api/word',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({reportText:REPORT_TEXT,photos:REPORT_PHOTOS,address:REPORT_ADDR})});
-        if(!res.ok)throw new Error('Word export failed');
-        const blob=await res.blob(),url=URL.createObjectURL(blob),a=document.createElement('a');
-        a.href=url;a.download='Report_'+REPORT_ADDR.replace(/[^a-zA-Z0-9]+/g,'_')+'.docx';a.click();URL.revokeObjectURL(url);
-      }catch(e){alert('Error: '+e.message);}
-    }
-
-    async function exportPDF(){
-      if(!REPORT_TEXT){alert('No report text — go back to editor and click Generate Report first.');return;}
-      try{
-        const res=await fetch('/api/pdf',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({reportText:REPORT_TEXT,photos:REPORT_PHOTOS,address:REPORT_ADDR})});
-        if(!res.ok)throw new Error('PDF failed');
-        const blob=await res.blob(),url=URL.createObjectURL(blob),a=document.createElement('a');
-        a.href=url;a.download='Report_'+REPORT_ADDR.replace(/[^a-zA-Z0-9]+/g,'_')+'.pdf';a.click();URL.revokeObjectURL(url);
-      }catch(e){alert('Error: '+e.message);}
-    }
-
-    async function approve(id){
-      await fetch('/api/status/'+id,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({status:'approved'})});
-      const b=document.getElementById('badge');b.textContent='approved';b.style.background='#E8F5E9';b.style.color='#4CAF50';
-    }
-    </script>
-  `));
-});
-
-// ── Write Sections ────────────────────────────────────────────────────────────
-app.post('/api/write-sections', requireAuth, async (req,res) => {
-  const d = req.body;
-  const prompt = `You are writing a professional insurance inspection report for Prime Time Electricians.
-
-Using the job data below, write five narrative sections. Be specific — use the actual property address, item names, measurements, cause and technician notes.
-
-JOB DATA:
-- Property: ${d.address||'not recorded'} (built ${d.yearBuilt||'unknown'}, ${d.roofType||'unknown'} roof)
-- Inspection: ${d.inspDate||''} at ${d.inspTime||''}
-- Insured: ${d.insured||'not recorded'}
-- Technician: ${d.tech||'not recorded'}
-- Item: ${d.item||'not recorded'} (${d.model||'unknown make'}, approx ${d.age||'unknown'} age)
-- Cable size: ${d.cable||'not recorded'}
-- Voltage: ${d.voltage||'not recorded'}
-- Cutout: ${d.cutout||'not recorded'}
-- Cause of damage: ${d.causeS||'not recorded'}
-- Wear and tear unrelated: ${d.wearTear||'No'}
-- Owner reported date: ${d.ownerDate||'not recorded'}
-- Technician damage notes: ${d.damageDetails||'none provided'}
-
-Return ONLY this JSON — no markdown, no preamble:
-{
-  "findings": "3-4 sentences: describe the property, what was inspected, condition found and all measurements taken on site. Use specific details.",
-  "causeD": "3-4 sentences: explain exactly how the damage occurred using all available notes, what components failed and why the item is unsafe to continue operating.",
-  "rec": "1-2 sentences: clearly recommend full replacement or repair and state why.",
-  "repair": "1 sentence: state specifically what work must be carried out.",
-  "summary": "3-4 sentences covering the item inspected, cause of damage and recommended outcome. Do NOT repeat the property address or year built."
-}`;
-
-  try {
-    const text = await callClaude([{role:'user',content:prompt}], 2000);
-    console.log('Write sections response:', text.substring(0,300));
-    const m = text.match(/\{[\s\S]*\}/);
-    if (!m) throw new Error('No JSON in response');
-    const sections = JSON.parse(m[0]);
-    res.json({ok:true, ...sections});
-  } catch(e) {
-    console.error('Write sections failed:', e.message);
+    console.error('Extract error:', e);
     res.status(500).json({ok:false, error:e.message});
   }
 });
 
-// ── PDF ───────────────────────────────────────────────────────────────────────
-app.get('/download/:id', requireAuth, async (req,res) => {
-  readDB();
-  const r=DB.reports.find(r=>r.id===req.params.id)||(req.session.lastReport?.id===req.params.id?req.session.lastReport:null);
-  if (!r?.reportText) return res.status(404).send('Not generated yet');
-  buildPDF({body:{reportText:r.reportText,photos:r.photos||[],address:r.address}},res);
+// ── Write Sections ────────────────────────────────────────────────────────────
+app.post('/api/write/:id', requireAuth, async (req,res) => {
+  const r = REPORTS[req.params.id];
+  if (!r) return res.status(404).json({ok:false,error:'Report not found'});
+  try {
+    const prompt = `Write professional insurance inspection report sections for Prime Time Electricians.
+
+JOB DATA:
+- Property: ${r.address||'not recorded'} (built ${r.yearBuilt||'unknown'}, ${r.roofType||'unknown'} roof)
+- Date: ${r.inspDate||''} at ${r.inspTime||''}
+- Insured: ${r.insured||'not recorded'}
+- Technician: ${r.tech||'not recorded'}
+- Item: ${r.item||'not recorded'} (${r.model||'unknown'}, approx ${r.age||'unknown'})
+- Cable: ${r.cable||'not recorded'} | Voltage: ${r.voltage||'not recorded'} | Cutout: ${r.cutout||'not recorded'}
+- Cause: ${r.causeS||'not recorded'}
+- Wear & tear unrelated: ${r.wearTear||'No'}
+- Owner reported: ${r.ownerDate||'not recorded'}
+- Technician notes: ${r.damageDetails||'none'}
+
+Return ONLY this JSON:
+{"findings":"3-4 sentences: property, what inspected, condition, measurements","causeD":"3-4 sentences: how damage occurred using technician notes, what failed, why unsafe","rec":"1-2 sentences: recommend replacement or repair and why","repair":"1 sentence: specifically what work must be done","summary":"3-4 sentences: item inspected, cause and outcome. Do NOT repeat address or year built."}`;
+
+    const txt = await claude([{role:'user',content:prompt}], 1500);
+    const m = txt.match(/\{[\s\S]*\}/);
+    if (!m) throw new Error('No JSON in response');
+    const sections = JSON.parse(m[0]);
+    Object.assign(r, sections);
+    saveReport(r);
+    res.json({ok:true, ...sections});
+  } catch(e) {
+    res.status(500).json({ok:false, error:e.message});
+  }
 });
 
-app.post('/api/pdf', requireAuth, (req,res) => buildPDF(req,res));
+// ── Generate Full Report ──────────────────────────────────────────────────────
+app.post('/api/generate/:id', requireAuth, async (req,res) => {
+  const r = REPORTS[req.params.id];
+  if (!r) return res.status(404).json({ok:false,error:'Report not found'});
+  // Update with any edits from the form
+  Object.assign(r, req.body);
+  const d = r;
+  const isNA = v => !v||['-','n/a','na','none','nil',''].includes(String(v).trim().toLowerCase());
+  const prompt = `Write a professional insurance inspection report for Prime Time Electricians. Use ## headings. Do NOT include "Prepared for" or "Client" lines. Start directly with ## 1. Site & Inspection Details.
 
-function buildPDF(req, res) {
-  const { reportText, photos, address } = req.body;
-  if (!reportText) return res.status(400).json({ ok: false, error: 'No report text' });
+SITE: ${d.address} | ${d.inspDate} ${d.inspTime||''} | Insured: ${d.insured||''} | Tech: ${d.tech||''}
+ITEM: ${[d.item,d.model,d.age,d.cable].filter(v=>!isNA(v)).join(', ')||'Not provided'}
+FINDINGS: ${d.findings||'Not provided'}
+CAUSE: ${[d.causeS,d.causeD].filter(v=>!isNA(v)).join(' — ')||'Not provided'}
+RECOMMENDATION: ${[d.rec,d.repair].filter(v=>!isNA(v)).join(' ')||'Not provided'}
+SUMMARY: ${d.summary||'Not provided'}
+
+Sections: ## 1. Site & Inspection Details  ## 2. Item Inspected  ## 3. Inspection Findings  ## 4. Cause of Damage  ## 5. Repair Recommendation  ## 6. Summary`;
+
   try {
-    const PW = 595.28, PH = 841.89, ML = 57, MR = 57, MB = 100;
-    let hBuf = null, fBuf = null;
-    try { hBuf = fs.readFileSync(HEADER_IMG); } catch(e) {}
-    try { fBuf = fs.readFileSync(FOOTER_IMG); } catch(e) {}
-    const hdrH = hBuf ? Math.round(PW * (350 / 2068)) : 75;
-    const CTOP = hdrH + 16;
-    const CBOT = PH - MB;
-    const CW = PW - ML - MR;
+    const text = await claude([{role:'user',content:prompt}], 2000);
+    const cleaned = text.replace(/^\*?\*?Prepared (for|by):?.*$/gmi,'').replace(/^\*?\*?Client:?.*$/gmi,'').trim();
+    r.reportText = cleaned;
+    saveReport(r);
+    res.json({ok:true, text:cleaned});
+  } catch(e) {
+    res.status(500).json({ok:false, error:e.message});
+  }
+});
 
-    // Use minimal margins — we position everything manually
-    const doc = new PDFDocument({ size: 'A4', margin: 0, autoFirstPage: false });
+// ── CRUD ──────────────────────────────────────────────────────────────────────
+app.post('/api/report/:id', requireAuth, (req,res) => {
+  const r = REPORTS[req.params.id] || {id:req.params.id,createdAt:new Date().toISOString(),status:'pending'};
+  Object.assign(r, req.body);
+  saveReport(r);
+  res.json({ok:true});
+});
+
+app.delete('/api/report/:id', requireAuth, (req,res) => {
+  delete REPORTS[req.params.id];
+  try { fs.writeFileSync('/tmp/reports.json', JSON.stringify(REPORTS)); } catch(e) {}
+  res.json({ok:true});
+});
+
+app.post('/api/status/:id', requireAuth, (req,res) => {
+  const r = REPORTS[req.params.id];
+  if (r) { r.status=req.body.status; saveReport(r); }
+  res.json({ok:true});
+});
+
+// ── PDF Export ────────────────────────────────────────────────────────────────
+app.post('/api/pdf/:id', requireAuth, (req,res) => {
+  const r = REPORTS[req.params.id];
+  if (!r?.reportText) return res.status(400).json({ok:false,error:'No report text'});
+  buildPDF(r, res);
+});
+
+function buildPDF(r, res) {
+  try {
+    const PW=595.28, PH=841.89, ML=57, MR=57, MB=100, CW=PW-ML-MR;
+    let hBuf=null, fBuf=null;
+    try { hBuf=fs.readFileSync(HEADER_IMG); } catch(e) {}
+    try { fBuf=fs.readFileSync(FOOTER_IMG); } catch(e) {}
+    const hdrH = hBuf ? Math.round(PW*(350/2068)) : 75;
+    const CTOP = hdrH+16, CBOT=PH-MB;
+
+    const doc = new PDFDocument({size:'A4',margin:0,autoFirstPage:false});
     const chunks = [];
-    doc.on('data', c => chunks.push(c));
-    doc.on('end', () => {
-      const fname = 'Report_' + (address || 'Report').replace(/[^a-zA-Z0-9]+/g, '_') + '.pdf';
-      res.setHeader('Content-Type', 'application/pdf');
-      res.setHeader('Content-Disposition', 'attachment; filename="' + fname + '"');
+    doc.on('data',c=>chunks.push(c));
+    doc.on('end',()=>{
+      const fname = 'Report_'+(r.address||'Report').replace(/[^a-zA-Z0-9]+/g,'_')+'.pdf';
+      res.setHeader('Content-Type','application/pdf');
+      res.setHeader('Content-Disposition','attachment; filename="'+fname+'"');
       res.send(Buffer.concat(chunks));
     });
 
-    const pItems = (photos || []).filter(p => p && p.data).map(p => ({
-      buf: Buffer.from(p.data.split(',')[1], 'base64'),
-      caption: p.caption || ''
+    const pItems = (r.photos||[]).filter(p=>p&&p.data).map(p=>({
+      buf: Buffer.from(p.data.split(',')[1],'base64'),
+      caption: p.caption||''
     }));
 
-    function chrome() {
-      // Header
-      if (hBuf) {
-        try { doc.image(hBuf, 0, 0, { width: PW, height: hdrH }); } catch(e) {}
-      } else {
-        doc.rect(0, 0, PW, hdrH).fill('#111111');
-        doc.fontSize(18).fillColor('#FFE600').font('Helvetica-Bold').text('PRIME TIME ELECTRICIANS', ML, 18, { width: CW });
-        doc.fontSize(9).fillColor('#ffffff').font('Helvetica').text('Insurance Inspection Report', ML, 46, { width: CW });
-      }
-      // Footer
-      if (fBuf) {
-        try { const fH = 40, fW = fH * (792 / 438); doc.image(fBuf, ML, PH - 65, { width: fW, height: fH }); } catch(e) {}
-      }
-      const pg = doc.bufferedPageRange().count;
+    function chrome(){
+      if(hBuf){try{doc.image(hBuf,0,0,{width:PW,height:hdrH});}catch(e){}}
+      else{doc.rect(0,0,PW,hdrH).fill('#111111');doc.fontSize(18).fillColor('#FFE600').font('Helvetica-Bold').text('PRIME TIME ELECTRICIANS',ML,18,{width:CW});doc.fontSize(9).fillColor('#ffffff').font('Helvetica').text('Insurance Inspection Report',ML,46,{width:CW});}
+      if(fBuf){try{const fH=40,fW=fH*(792/438);doc.image(fBuf,ML,PH-65,{width:fW,height:fH});}catch(e){}}
+      const pg=doc.bufferedPageRange().count;
       doc.fontSize(7).fillColor('#999999')
-        .text('Confidential — Prepared for Insurance Purposes Only', 0, PH - 48, { align: 'right', width: PW - MR })
-        .text('Prime Time Electricians  |  ABN 88 151 349 012  |  EC 9142  |  Page ' + pg, 0, PH - 36, { align: 'right', width: PW - MR });
-      // Reset cursor to content area
-      doc.x = ML;
-      doc.y = CTOP;
+        .text('Confidential — Prepared for Insurance Purposes Only',0,PH-48,{align:'right',width:PW-MR})
+        .text('Prime Time Electricians  |  ABN 88 151 349 012  |  EC 9142  |  Page '+pg,0,PH-36,{align:'right',width:PW-MR});
+      doc.x=ML; doc.y=CTOP;
     }
 
-    function np() { doc.addPage(); chrome(); }
-    function chk(n) { if (doc.y + n > CBOT) np(); }
+    function np(){doc.addPage();chrome();}
+    function chk(n){if(doc.y+n>CBOT)np();}
+    function hd(t){chk(55);doc.moveDown(0.3);doc.fontSize(10.5).fillColor('#111111').font('Helvetica-Bold').text(t,ML,doc.y,{width:CW});doc.moveTo(ML,doc.y+2).lineTo(ML+CW,doc.y+2).strokeColor('#FFE600').lineWidth(1.5).stroke();doc.y=doc.y+7;doc.x=ML;}
+    function bt(p){chk(35);doc.fontSize(9.5).fillColor('#333333').font('Helvetica').text(p,ML,doc.y,{width:CW,lineGap:2.5});doc.moveDown(0.3);}
 
-    function hd(t) {
-      chk(55);
-      doc.moveDown(0.3);
-      doc.fontSize(10.5).fillColor('#111111').font('Helvetica-Bold').text(t, ML, doc.y, { width: CW });
-      doc.moveTo(ML, doc.y + 2).lineTo(ML + CW, doc.y + 2).strokeColor('#FFE600').lineWidth(1.5).stroke();
-      doc.y = doc.y + 7;
-      doc.x = ML;
+    const secs=[]; let cur=null;
+    for(const line of r.reportText.split('\n')){
+      if(line.match(/^#{1,3} /)){if(cur)secs.push(cur);cur={title:line.replace(/^#{1,3} [\d.]*\s*/,'').trim().toUpperCase(),paras:[]};}
+      else if(line.trim()&&cur)cur.paras.push(line.trim());
     }
+    if(cur)secs.push(cur);
 
-    function bt(p) {
-      chk(35);
-      doc.fontSize(9.5).fillColor('#333333').font('Helvetica').text(p, ML, doc.y, { width: CW, lineGap: 2.5 });
-      doc.moveDown(0.3);
-    }
-
-    // Parse sections
-    const secs = []; let cur = null;
-    for (const line of (reportText || '').split('\n')) {
-      if (line.match(/^#{1,3} /)) {
-        if (cur) secs.push(cur);
-        cur = { title: line.replace(/^#{1,3} [\d.]*\s*/, '').trim().toUpperCase(), paras: [] };
-      } else if (line.trim() && cur) {
-        cur.paras.push(line.trim());
-      }
-    }
-    if (cur) secs.push(cur);
-
-    // Start page 1 — content starts immediately after header
     np();
-
-    // Write text sections
-    for (const sec of secs) {
-      if (/PHOTO/i.test(sec.title)) continue;
+    for(const sec of secs){
+      if(/PHOTO/i.test(sec.title))continue;
       hd(sec.title);
-      for (const p of sec.paras) bt(p);
+      for(const p of sec.paras)bt(p);
     }
 
-    // Photos — 3 per row, proper landscape ratio, no distortion
-    if (pItems.length > 0) {
-      chk(55);
-      doc.moveDown(0.3);
-      hd('SITE PHOTOGRAPHS');
-      const COLS = 3, GX = 10;
-      const IW = Math.floor((CW - GX * (COLS - 1)) / COLS); // ~156pt each
-      const IH = Math.round(IW * 0.67); // 3:2 landscape ratio
-      const CAP = 14;
-      const RH = IH + CAP + 10;
-      let col = 0, ry = doc.y + 4;
-
-      for (const { buf, caption } of pItems) {
-        if (col === 0 && ry + RH > CBOT) { np(); ry = doc.y + 4; }
-        const x = ML + col * (IW + GX);
-        // Use fit to preserve aspect ratio within the box
-        try { doc.image(buf, x, ry, { fit: [IW, IH], align: 'center', valign: 'center' }); } catch(e) {}
-        // Draw border around photo slot
-        doc.rect(x, ry, IW, IH).strokeColor('#EEEEEE').lineWidth(0.5).stroke();
-        // Caption below
-        doc.fontSize(7.5).fillColor('#444444').font('Helvetica')
-          .text(caption, x, ry + IH + 3, { width: IW, align: 'center', lineBreak: false });
-        col++;
-        if (col >= COLS) { col = 0; ry += RH; }
+    if(pItems.length>0){
+      chk(55); doc.moveDown(0.3); hd('SITE PHOTOGRAPHS');
+      const COLS=3,GX=10;
+      const IW=Math.floor((CW-GX*(COLS-1))/COLS);
+      const IH=Math.round(IW*0.67);
+      const RH=IH+20;
+      let col=0, ry=doc.y+4;
+      for(const{buf,caption}of pItems){
+        if(col===0&&ry+RH>CBOT){np();ry=doc.y+4;}
+        const x=ML+col*(IW+GX);
+        try{doc.image(buf,x,ry,{fit:[IW,IH],align:'center',valign:'center'});}catch(e){}
+        doc.rect(x,ry,IW,IH).strokeColor('#EEEEEE').lineWidth(0.5).stroke();
+        doc.fontSize(7.5).fillColor('#444444').font('Helvetica').text(caption,x,ry+IH+3,{width:IW,align:'center',lineBreak:false});
+        col++;if(col>=COLS){col=0;ry+=RH;}
       }
     }
 
     doc.end();
   } catch(e) {
-    console.error('PDF error:', e);
-    if (!res.headersSent) res.status(500).json({ ok: false, error: e.message });
+    console.error('PDF error:',e);
+    if(!res.headersSent)res.status(500).json({ok:false,error:e.message});
   }
 }
 
-
 // ── Word Export ───────────────────────────────────────────────────────────────
-app.post('/api/word', requireAuth, async (req, res) => {
-  const { reportText, photos, address } = req.body;
-  if (!reportText) return res.status(400).json({ ok: false, error: 'No report text' });
+app.post('/api/word/:id', requireAuth, async (req,res) => {
+  const r = REPORTS[req.params.id];
+  if (!r?.reportText) return res.status(400).json({ok:false,error:'No report text'});
   try {
     const children = [];
-
-    // Parse sections from report text
-    const secs = []; let cur = null;
-    for (const line of (reportText || '').split('\n')) {
-      if (line.match(/^#{1,3} /)) {
-        if (cur) secs.push(cur);
-        cur = { title: line.replace(/^#{1,3} [\d.]*\s*/, '').trim(), paras: [] };
-      } else if (line.trim() && cur) {
-        cur.paras.push(line.trim());
-      }
-    }
-    if (cur) secs.push(cur);
-
-    // Add header image if available
     try {
       const hBuf = fs.readFileSync(HEADER_IMG);
-      children.push(new Paragraph({
-        children: [new ImageRun({ data: hBuf, transformation: { width: 620, height: 95 }, type: 'jpg' })]
-      }));
-      children.push(new Paragraph({ text: '' }));
+      children.push(new Paragraph({children:[new ImageRun({data:hBuf,transformation:{width:620,height:95},type:'jpg'})]}));
+      children.push(new Paragraph({text:''}));
     } catch(e) {
-      // No header image — add title text
-      children.push(new Paragraph({
-        heading: HeadingLevel.TITLE,
-        children: [new TextRun({ text: 'PRIME TIME ELECTRICIANS', bold: true, size: 36, color: '111111' })]
-      }));
-      children.push(new Paragraph({
-        children: [new TextRun({ text: 'Insurance Inspection Report', size: 22, color: '666666' })]
-      }));
-      children.push(new Paragraph({ text: '' }));
+      children.push(new Paragraph({children:[new TextRun({text:'PRIME TIME ELECTRICIANS',bold:true,size:36,color:'111111'})]}));
     }
 
-    // Write sections
-    for (const sec of secs) {
-      if (/PHOTO/i.test(sec.title)) continue;
+    const secs=[]; let cur=null;
+    for(const line of r.reportText.split('\n')){
+      if(line.match(/^#{1,3} /)){if(cur)secs.push(cur);cur={title:line.replace(/^#{1,3} [\d.]*\s*/,'').trim().toUpperCase(),paras:[]};}
+      else if(line.trim()&&cur)cur.paras.push(line.trim());
+    }
+    if(cur)secs.push(cur);
 
-      // Section heading with yellow underline
-      children.push(new Paragraph({
-        children: [new TextRun({ text: sec.title.toUpperCase(), bold: true, size: 22, color: '111111' })],
-        border: { bottom: { style: BorderStyle.SINGLE, size: 12, color: 'FFE600', space: 4 } },
-        spacing: { before: 280, after: 120 }
-      }));
-
-      for (const para of sec.paras) {
-        children.push(new Paragraph({
-          children: [new TextRun({ text: para, size: 20, color: '333333' })],
-          spacing: { after: 120 },
-          alignment: AlignmentType.JUSTIFIED
-        }));
+    for(const sec of secs){
+      if(/PHOTO/i.test(sec.title))continue;
+      children.push(new Paragraph({children:[new TextRun({text:sec.title,bold:true,size:22,color:'111111'})],border:{bottom:{style:BorderStyle.SINGLE,size:12,color:'FFE600',space:4}},spacing:{before:280,after:120}}));
+      for(const p of sec.paras){
+        children.push(new Paragraph({children:[new TextRun({text:p,size:20,color:'333333'})],spacing:{after:120},alignment:AlignmentType.JUSTIFIED}));
       }
     }
 
-    // Photos section
-    const pItems = (photos || []).filter(p => p && p.data).map(p => ({
-      buf: Buffer.from(p.data.split(',')[1], 'base64'),
-      caption: p.caption || '',
-      isJpeg: p.data.startsWith('data:image/jpeg')
-    }));
-
-    if (pItems.length > 0) {
-      children.push(new Paragraph({
-        children: [new TextRun({ text: 'SITE PHOTOGRAPHS', bold: true, size: 22, color: '111111' })],
-        border: { bottom: { style: BorderStyle.SINGLE, size: 12, color: 'FFE600', space: 4 } },
-        spacing: { before: 280, after: 160 }
-      }));
-
-      // 2 photos per row
-      for (let i = 0; i < pItems.length; i += 2) {
-        const rowPhotos = pItems.slice(i, i + 2);
-        const rowChildren = [];
-        for (const p of rowPhotos) {
-          try {
-            rowChildren.push(new ImageRun({
-              data: p.buf,
-              transformation: { width: 270, height: 195 },
-              type: p.isJpeg ? 'jpg' : 'png'
-            }));
-            rowChildren.push(new TextRun({ text: '    ' }));
-          } catch(e) {}
+    const pItems=(r.photos||[]).filter(p=>p&&p.data);
+    if(pItems.length>0){
+      children.push(new Paragraph({children:[new TextRun({text:'SITE PHOTOGRAPHS',bold:true,size:22,color:'111111'})],border:{bottom:{style:BorderStyle.SINGLE,size:12,color:'FFE600',space:4}},spacing:{before:280,after:160}}));
+      for(let i=0;i<pItems.length;i+=2){
+        const row=pItems.slice(i,i+2);
+        const rc=[];
+        for(const p of row){
+          try{rc.push(new ImageRun({data:Buffer.from(p.data.split(',')[1],'base64'),transformation:{width:270,height:185},type:p.data.startsWith('data:image/jpeg')?'jpg':'png'}));rc.push(new TextRun({text:'    '}));}catch(e){}
         }
-        if (rowChildren.length > 0) {
-          children.push(new Paragraph({ children: rowChildren, spacing: { after: 40 } }));
-          // Captions row
-          const capChildren = rowPhotos.map(p =>
-            new TextRun({ text: p.caption.padEnd(45), size: 16, color: '666666', italics: true })
-          );
-          children.push(new Paragraph({ children: capChildren, spacing: { after: 160 } }));
-        }
+        if(rc.length)children.push(new Paragraph({children:rc,spacing:{after:40}}));
+        children.push(new Paragraph({children:row.map(p=>new TextRun({text:(p.caption||'').padEnd(45),size:16,color:'666666',italics:true})),spacing:{after:140}}));
       }
     }
-
-    // Footer image
-    try {
-      const fBuf = fs.readFileSync(FOOTER_IMG);
-      children.push(new Paragraph({ text: '' }));
-      children.push(new Paragraph({
-        children: [new ImageRun({ data: fBuf, transformation: { width: 180, height: 50 }, type: 'png' })]
-      }));
-    } catch(e) {}
 
     const doc = new Document({
-      styles: {
-        default: { document: { run: { font: 'Arial', size: 20 } } }
-      },
-      sections: [{
-        properties: {
-          page: {
-            size: { width: 11906, height: 16838 },
-            margin: { top: 720, right: 720, bottom: 720, left: 720 }
-          }
-        },
-        children
-      }]
+      styles:{default:{document:{run:{font:'Arial',size:20}}}},
+      sections:[{properties:{page:{size:{width:11906,height:16838},margin:{top:720,right:720,bottom:720,left:720}}},children}]
     });
-
     const buffer = await Packer.toBuffer(doc);
-    const fname = 'Report_' + (address || 'Report').replace(/[^a-zA-Z0-9]+/g, '_') + '.docx';
-    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
-    res.setHeader('Content-Disposition', 'attachment; filename="' + fname + '"');
+    const fname = 'Report_'+(r.address||'Report').replace(/[^a-zA-Z0-9]+/g,'_')+'.docx';
+    res.setHeader('Content-Type','application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+    res.setHeader('Content-Disposition','attachment; filename="'+fname+'"');
     res.send(buffer);
   } catch(e) {
-    console.error('Word export error:', e);
-    res.status(500).json({ ok: false, error: e.message });
+    console.error('Word error:',e);
+    res.status(500).json({ok:false,error:e.message});
   }
 });
 
 // ── Start ─────────────────────────────────────────────────────────────────────
-app.listen(PORT,()=>console.log('Prime Time Portal running on port '+PORT));
+app.listen(PORT, () => console.log('PT Portal on port '+PORT));
 
