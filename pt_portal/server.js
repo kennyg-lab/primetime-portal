@@ -223,8 +223,13 @@ app.get('/upload', requireAuth, (req, res) => {
         const res=await fetch('/api/extract',{method:'POST',body:fd});
         const json=await res.json();
         if(!json.ok)throw new Error(json.error);
-        // Store text fields in sessionStorage for editor prefill
-        try { sessionStorage.setItem('rpt_'+json.reportId, JSON.stringify(json.textData)); } catch(e){}
+        // Store full report in localStorage (photos + text)
+        if(json.fullReport){
+          try{localStorage.setItem('rpt_'+json.reportId,JSON.stringify(json.fullReport));}catch(e){
+            // localStorage full — store without photos
+            try{localStorage.setItem('rpt_'+json.reportId,JSON.stringify({...json.fullReport,photos:[]}));}catch(e2){}
+          }
+        }
         st.innerHTML='<span style="color:#4CAF50;font-weight:600">&#10003; Done! '+json.photosFound+' photos extracted — preparing report...</span>';
         setTimeout(()=>window.location.href='/review/'+json.reportId,800);
       }catch(e){st.innerHTML='<span style="color:#E53935">&#10005; '+e.message+'</span>';gb.style.display='block';}
@@ -583,14 +588,12 @@ function buildEditor(reportId, data) {
         const cleaned=json.text.replace(/^\*?\*?Prepared (for|by):?.*$/gmi,'').replace(/^\*?\*?Client:?.*$/gmi,'').trim();
         window._rt=cleaned;
         st.textContent='Saving...';
-        // Fetch full report with photos from server before saving
+        // Get photos from localStorage since photoData may be empty
         let fullPhotos=d.photos;
-        if(REPORT_ID){
-          try{
-            const pr=await fetch('/api/report/'+REPORT_ID);
-            if(pr.ok){const pd=await pr.json();if(pd&&pd.photos)fullPhotos=pd.photos;}
-          }catch(e){}
-        }
+        try{
+          const stored=localStorage.getItem('rpt_'+REPORT_ID);
+          if(stored){const sd=JSON.parse(stored);if(sd.photos&&sd.photos.some(p=>p&&p.data))fullPhotos=sd.photos;}
+        }catch(e){}
         d.photos=fullPhotos;
         d.reportText=cleaned;
         const url=REPORT_ID?'/api/report/'+REPORT_ID:'/api/report';
@@ -648,25 +651,20 @@ function buildEditor(reportId, data) {
     document.getElementById('sSave').onclick=e=>{e.preventDefault();saveDraft(false);};
     document.getElementById('sPDF').onclick=e=>{e.preventDefault();exportPDF();};
 
-    // Load text fields from sessionStorage if available, then load photos from API
+    // Load report data from localStorage (stored during upload)
     if(REPORT_ID){
-      // Try sessionStorage for text fields first
-      try {
-        const stored=sessionStorage.getItem('rpt_'+REPORT_ID);
+      try{
+        const stored=localStorage.getItem('rpt_'+REPORT_ID);
         if(stored){
           const sd=JSON.parse(stored);
-          // Prefill text fields from sessionStorage
+          // Fill text fields
           const MAP={address:'address',inspDate:'inspDate',inspTime:'inspTime',rptDate:'rptDate',insured:'insured',tech:'tech',item:'item',model:'model',age:'age',fault:'fault',cable:'cable',ownerDate:'ownerDate',causeS:'causeS',findings:'findTxt',causeD:'causeD',rec:'recTxt',repair:'repTxt',summary:'sumTxt'};
           Object.entries(MAP).forEach(([from,to])=>{const el=document.getElementById(to);if(el&&sd[from])el.value=sd[from];});
+          // Load photos
+          if(sd.photos){sd.photos.forEach((p,i)=>{if(p&&p.data){photoData[i]=p.data;photoCaptions[i]=p.caption||LABELS[i];}});}
         }
-      } catch(e){}
-      // Always load photos from API (they're in the session on server)
-      fetch('/api/report/'+REPORT_ID).then(r=>r.ok?r.json():null).then(data=>{
-        if(data&&data.photos){
-          data.photos.forEach((p,i)=>{if(p&&p.data){photoData[i]=p.data;photoCaptions[i]=p.caption||LABELS[i];}});
-        }
-        buildPhotos();
-      }).catch(()=>buildPhotos());
+      }catch(e){console.log('localStorage load failed:',e);}
+      buildPhotos();
     } else {
       buildPhotos();
     }
@@ -796,7 +794,7 @@ Return ONLY valid JSON — no markdown:
 
     // Return text-only data for sessionStorage (photos too large)
     const textData = {...report, photos: report.photos.map(p=>({data:null,caption:p.caption,rotation:p.rotation||0}))};
-    res.json({ok:true, reportId:report.id, photosFound:rawPhotos.length, textData});
+    res.json({ok:true, reportId:report.id, photosFound:rawPhotos.length, textData, fullReport:report});
 
   } catch(err) {
     console.error('Extract error:', err);
@@ -942,7 +940,9 @@ app.get('/draft/:id', requireAuth, (req,res) => {
     const REPORT_TEXT=${JSON.stringify(r.reportText||'')};
     const REPORT_ADDR=${JSON.stringify(r.address||'')};
     const REPORT_ID=${JSON.stringify(r.id)};
-    const REPORT_PHOTOS=${JSON.stringify((r.photos||[]).map(p=>({data:p.data||null,caption:p.caption||''})))};
+    // Load photos from localStorage
+    let REPORT_PHOTOS=[];
+    try{const s=localStorage.getItem('rpt_'+REPORT_ID);if(s){const d=JSON.parse(s);if(d.photos)REPORT_PHOTOS=d.photos;}}catch(e){}
 
     async function exportWord(){
       if(!REPORT_TEXT){alert('No report text — generate first.');return;}
