@@ -610,6 +610,13 @@ app.post('/api/write/:id', requireAuth, async (req,res) => {
   try {
     const prompt = `Write professional insurance inspection report sections for Prime Time Electricians.
 
+IMPORTANT RULES:
+- Write in formal professional prose only — NO bullet points, NO numbered lists, NO dot points
+- NO bold text, NO asterisks, NO stars
+- NO urgency language like "Urgent", "Immediate Action Required", "Priority Level"
+- NO "Report Prepared By" footer lines
+- Write flowing paragraphs like a formal legal or insurance document
+
 JOB DATA:
 - Property: ${r.address||'not recorded'} (built ${r.yearBuilt||'unknown'}, ${r.roofType||'unknown'} roof)
 - Date: ${r.inspDate||''} at ${r.inspTime||''}
@@ -622,8 +629,8 @@ JOB DATA:
 - Owner reported: ${r.ownerDate||'not recorded'}
 - Technician notes: ${r.damageDetails||'none'}
 
-Return ONLY this JSON:
-{"findings":"3-4 sentences: property, what inspected, condition, measurements","causeD":"3-4 sentences: how damage occurred using technician notes, what failed, why unsafe","rec":"1-2 sentences: recommend replacement or repair and why","repair":"1 sentence: specifically what work must be done","summary":"3-4 sentences: item inspected, cause and outcome. Do NOT repeat address or year built."}`;
+Return ONLY this JSON — no markdown, no preamble:
+{"findings":"3-4 sentences of formal prose: describe the property, what was inspected, condition found and measurements taken on site","causeD":"3-4 sentences of formal prose: explain exactly how the damage occurred using the technician notes, what components failed and why the item is unsafe to operate","rec":"2-3 sentences of formal prose: recommend full replacement or repair and explain why repair is not viable","repair":"1-2 sentences of formal prose: state specifically what work must be carried out","summary":"3-4 sentences of formal prose covering the item inspected, cause of damage and recommended outcome. Do NOT repeat the property address or year built."}`;
 
     const txt = await claude([{role:'user',content:prompt}], 1500);
     const m = txt.match(/\{[\s\S]*\}/);
@@ -645,7 +652,16 @@ app.post('/api/generate/:id', requireAuth, async (req,res) => {
   Object.assign(r, req.body);
   const d = r;
   const isNA = v => !v||['-','n/a','na','none','nil',''].includes(String(v).trim().toLowerCase());
-  const prompt = `Write a professional insurance inspection report for Prime Time Electricians. Use ## headings. Do NOT include "Prepared for" or "Client" lines. Start directly with ## 1. Site & Inspection Details.
+  const prompt = `Write a professional insurance inspection report for Prime Time Electricians. 
+
+IMPORTANT RULES:
+- Use ## headings only
+- Write in formal professional prose — NO bullet points, NO numbered lists, NO dot points
+- NO bold text, NO asterisks, NO stars
+- NO urgency language like "Urgent", "Immediate Action Required", "Priority Level"
+- NO "Prepared for", "Client", or "Report Prepared By" lines
+- Start directly with ## 1. Site & Inspection Details
+- Write flowing paragraphs like a formal legal or insurance document
 
 SITE: ${d.address} | ${d.inspDate} ${d.inspTime||''} | Insured: ${d.insured||''} | Tech: ${d.tech||''}
 ITEM: ${[d.item,d.model,d.age,d.cable].filter(v=>!isNA(v)).join(', ')||'Not provided'}
