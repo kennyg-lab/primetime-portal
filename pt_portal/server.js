@@ -413,7 +413,8 @@ app.get('/edit/:id', requireAuth, (req,res) => {
 function buildEditor(reportId, data) {
   // Safely encode all text fields as JSON strings for embedding in HTML
   const sf = k => JSON.stringify(data[k]||'');
-  const photos = JSON.stringify((data.photos||[]).map(p=>({data:p.data||null,caption:p.caption||'',rotation:p.rotation||0})));
+  // Don't embed photo data inline — too large, load via API instead
+  const photos = JSON.stringify((data.photos||[]).map(p=>({data:null,caption:p.caption||'',rotation:p.rotation||0})));
   // Embed metadata for writeSections (no photos - too large)
   const meta = JSON.stringify({
     address:data.address||'', inspDate:data.inspDate||'', inspTime:data.inspTime||'',
@@ -580,18 +581,30 @@ function buildEditor(reportId, data) {
         // Strip any "Prepared for/by" lines Claude adds
         const cleaned=json.text.replace(/^\*?\*?Prepared (for|by):?.*$/gmi,'').replace(/^\*?\*?Client:?.*$/gmi,'').trim();
         window._rt=cleaned;
-        // Save then redirect to draft report page
-        await saveDraft(true);
-        window.location.href='/draft/'+REPORT_ID;
+        st.textContent='Saving...';
+        const saveRes=await saveDraft(true);
+        const reportId=saveRes||REPORT_ID;
+        if(reportId){
+          window.location.href='/draft/'+reportId;
+        } else {
+          st.className='st on err';st.textContent='Error: No report ID to redirect to';
+        }
       }catch(e){st.className='st on err';st.textContent='Error: '+e.message;}
       btn.textContent='Generate Report';
     }
 
     async function saveDraft(silent){
       const d=collect();d.reportText=window._rt||'';
-      const url=REPORT_ID?'/api/report/'+REPORT_ID:'/api/report';
-      await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(d)});
+      let reportId=REPORT_ID;
+      if(reportId){
+        await fetch('/api/report/'+reportId,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(d)});
+      } else {
+        const res=await fetch('/api/report',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(d)});
+        const json=await res.json();
+        reportId=json.id;
+      }
       if(!silent){const st=document.getElementById('st');st.className='st on ok';st.textContent='Saved';setTimeout(()=>st.className='st',2000);}
+      return reportId;
     }
 
     async function exportPDF(){
