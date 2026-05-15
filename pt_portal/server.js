@@ -223,6 +223,8 @@ app.get('/upload', requireAuth, (req, res) => {
         const res=await fetch('/api/extract',{method:'POST',body:fd});
         const json=await res.json();
         if(!json.ok)throw new Error(json.error);
+        // Store text fields in sessionStorage for editor prefill
+        try { sessionStorage.setItem('rpt_'+json.reportId, JSON.stringify(json.textData)); } catch(e){}
         st.innerHTML='<span style="color:#4CAF50;font-weight:600">&#10003; Done! '+json.photosFound+' photos extracted — preparing report...</span>';
         setTimeout(()=>window.location.href='/review/'+json.reportId,800);
       }catch(e){st.innerHTML='<span style="color:#E53935">&#10005; '+e.message+'</span>';gb.style.display='block';}
@@ -578,33 +580,30 @@ function buildEditor(reportId, data) {
       try{
         const res=await fetch('/api/generate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(d)});
         const json=await res.json();if(!json.ok)throw new Error(json.error);
-        // Strip any "Prepared for/by" lines Claude adds
         const cleaned=json.text.replace(/^\*?\*?Prepared (for|by):?.*$/gmi,'').replace(/^\*?\*?Client:?.*$/gmi,'').trim();
         window._rt=cleaned;
         st.textContent='Saving...';
-        const saveRes=await saveDraft(true);
-        const reportId=saveRes||REPORT_ID;
+        // Fetch full report with photos from server before saving
+        let fullPhotos=d.photos;
+        if(REPORT_ID){
+          try{
+            const pr=await fetch('/api/report/'+REPORT_ID);
+            if(pr.ok){const pd=await pr.json();if(pd&&pd.photos)fullPhotos=pd.photos;}
+          }catch(e){}
+        }
+        d.photos=fullPhotos;
+        d.reportText=cleaned;
+        const url=REPORT_ID?'/api/report/'+REPORT_ID:'/api/report';
+        const sr=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(d)});
+        const sj=await sr.json();
+        const reportId=REPORT_ID||sj.id;
         if(reportId){
           window.location.href='/draft/'+reportId;
         } else {
-          st.className='st on err';st.textContent='Error: No report ID to redirect to';
+          st.className='st on err';st.textContent='Saved but no ID — check dashboard';
         }
       }catch(e){st.className='st on err';st.textContent='Error: '+e.message;}
       btn.textContent='Generate Report';
-    }
-
-    async function saveDraft(silent){
-      const d=collect();d.reportText=window._rt||'';
-      let reportId=REPORT_ID;
-      if(reportId){
-        await fetch('/api/report/'+reportId,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(d)});
-      } else {
-        const res=await fetch('/api/report',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(d)});
-        const json=await res.json();
-        reportId=json.id;
-      }
-      if(!silent){const st=document.getElementById('st');st.className='st on ok';st.textContent='Saved';setTimeout(()=>st.className='st',2000);}
-      return reportId;
     }
 
     async function exportPDF(){
@@ -649,14 +648,25 @@ function buildEditor(reportId, data) {
     document.getElementById('sSave').onclick=e=>{e.preventDefault();saveDraft(false);};
     document.getElementById('sPDF').onclick=e=>{e.preventDefault();exportPDF();};
 
-    // Load photos from API
+    // Load text fields from sessionStorage if available, then load photos from API
     if(REPORT_ID){
+      // Try sessionStorage for text fields first
+      try {
+        const stored=sessionStorage.getItem('rpt_'+REPORT_ID);
+        if(stored){
+          const sd=JSON.parse(stored);
+          // Prefill text fields from sessionStorage
+          const MAP={address:'address',inspDate:'inspDate',inspTime:'inspTime',rptDate:'rptDate',insured:'insured',tech:'tech',item:'item',model:'model',age:'age',fault:'fault',cable:'cable',ownerDate:'ownerDate',causeS:'causeS',findings:'findTxt',causeD:'causeD',rec:'recTxt',repair:'repTxt',summary:'sumTxt'};
+          Object.entries(MAP).forEach(([from,to])=>{const el=document.getElementById(to);if(el&&sd[from])el.value=sd[from];});
+        }
+      } catch(e){}
+      // Always load photos from API (they're in the session on server)
       fetch('/api/report/'+REPORT_ID).then(r=>r.ok?r.json():null).then(data=>{
         if(data&&data.photos){
           data.photos.forEach((p,i)=>{if(p&&p.data){photoData[i]=p.data;photoCaptions[i]=p.caption||LABELS[i];}});
-          buildPhotos();
         }
-      }).catch(()=>{});
+        buildPhotos();
+      }).catch(()=>buildPhotos());
     } else {
       buildPhotos();
     }
@@ -784,7 +794,9 @@ Return ONLY valid JSON — no markdown:
     await new Promise(resolve => req.session.save(resolve));
     console.log('Report saved — id:', report.id, '| findings:', report.findings?.substring(0,60)||'NONE');
 
-    res.json({ok:true, reportId:report.id, photosFound:rawPhotos.length});
+    // Return text-only data for sessionStorage (photos too large)
+    const textData = {...report, photos: report.photos.map(p=>({data:null,caption:p.caption,rotation:p.rotation||0}))};
+    res.json({ok:true, reportId:report.id, photosFound:rawPhotos.length, textData});
 
   } catch(err) {
     console.error('Extract error:', err);
