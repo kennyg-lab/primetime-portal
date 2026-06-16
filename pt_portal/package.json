@@ -1,7 +1,7 @@
 {
-  "name": "primetime-report-portal",
+"name": "primetime-report-portal",
   "version": "1.0.0",
-  "description": "Prime Time Electricians — Insurance Report Portal",
+  "description": "Prime Time Electricians \u2014 Insurance Report Portal",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
@@ -23,6 +23,6 @@
     "nodemon": "^3.0.2"
   },
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=18.0.0" 
+     }
   }
-}
