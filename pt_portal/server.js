@@ -696,12 +696,14 @@ app.post('/api/rewrite/:id/:section', requireAuth, async (req,res) => {
 - Owner reported: ${r.ownerDate||'not recorded'}
 - Technician notes: ${r.damageDetails||'none'}
 
-EXISTING SECTIONS (for context — do not repeat their content):
+EXISTING SECTIONS (these reflect the latest edits made by the technician — use them as the source of truth for facts, stay consistent with them, and do not contradict or repeat their content):
 - Findings: ${r.findings||'not written'}
 - Cause: ${r.causeD||'not written'}
 - Recommendation: ${r.rec||'not written'}
 - Repair: ${r.repair||'not written'}
-- Summary: ${r.summary||'not written'}`;
+- Summary: ${r.summary||'not written'}
+
+IMPORTANT: If any of the sections above have been edited and now contain different facts, measurements, or conclusions than the original JOB DATA, treat the EXISTING SECTIONS as correct and current. Your rewrite must align with what is currently written in the other sections.`;
 
   const RULES = `IMPORTANT RULES:
 - Be concise and direct — no repetition, no padding, get to the point
