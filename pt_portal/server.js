@@ -640,29 +640,38 @@ app.post('/api/write/:id', requireAuth, async (req,res) => {
   const r = REPORTS[req.params.id];
   if (!r) return res.status(404).json({ok:false,error:'Report not found'});
   try {
-    const prompt = `Write professional insurance inspection report sections for Prime Time Electricians.
+    const prompt = `You are an experienced licensed electrician writing an insurance inspection report for Prime Time Electricians. Write in plain professional trade language — the way a qualified sparky would write it, not a lawyer. Clear, direct, practical.
 
-IMPORTANT RULES:
-- Be concise and direct — no repetition, no padding, get to the point
-- Write in formal prose paragraphs — NO bullet points, NO numbered lists, NO dot points
-- NO bold text, NO asterisks, NO stars
-- NO urgency language
-- Each section should be 2-3 sentences maximum — clear and factual
+TONE GUIDE:
+- Sound like a tradesperson who knows their stuff — confident and factual, not overly formal
+- Use trade terminology naturally: fusion damage, burnt terminals, failed protection devices, open circuit, earth fault, surge damage, compromised insulation etc.
+- For surge/lightning damage: describe the fusion damage, burnt or vaporised components, tracks blown on boards, failed MOVs or capacitors — be specific about what physically happened
+- For water damage: describe corrosion on terminals, moisture ingress into enclosure, tracking damage, pitting on contacts
+- For mechanical failure: describe what wore out, seized, or failed and why it can no longer operate safely
+- Keep it concise — 2-3 sentences per section, no padding
+- NO bullet points, NO bold text, NO asterisks, NO urgency phrases like "Immediate Action Required"
+- NO "Prepared by" or "Report Prepared By" lines
 
 JOB DATA:
 - Property: ${r.address||'not recorded'} (built ${r.yearBuilt||'unknown'}, ${r.roofType||'unknown'} roof)
-- Date: ${r.inspDate||''} at ${r.inspTime||''}
+- Inspection: ${r.inspDate||''} at ${r.inspTime||''}
 - Insured: ${r.insured||'not recorded'}
 - Technician: ${r.tech||'not recorded'}
-- Item: ${r.item||'not recorded'} (${r.model||'unknown'}, approx ${r.age||'unknown'})
-- Cable: ${r.cable||'not recorded'} | Voltage: ${r.voltage||'not recorded'} | Cutout: ${r.cutout||'not recorded'}
-- Cause: ${r.causeS||'not recorded'}
-- Wear & tear unrelated: ${r.wearTear||'No'}
-- Owner reported: ${r.ownerDate||'not recorded'}
-- Technician notes: ${r.damageDetails||'none'}
+- Item inspected: ${r.item||'not recorded'} (${r.model||'unknown make'}, approx ${r.age||'unknown age'})
+- Cable size: ${r.cable||'not recorded'} | Voltage: ${r.voltage||'not recorded'} | Cutout: ${r.cutout||'not recorded'}
+- Cause of damage: ${r.causeS||'not recorded'}
+- Wear and tear unrelated to claim: ${r.wearTear||'No'}
+- Owner reported date: ${r.ownerDate||'not recorded'}
+- Technician site notes: ${r.damageDetails||'none provided'}
 
 Return ONLY this JSON — no markdown, no preamble:
-{"findings":"2-3 concise sentences: what was inspected, condition found, key measurements","causeD":"2-3 concise sentences: how the damage occurred and why the item is unsafe","rec":"1-2 concise sentences: what is recommended and why","repair":"1 concise sentence: specifically what work must be done","summary":"2-3 concise sentences: item, cause and outcome. Do NOT repeat the address or year built."}`;
+{
+  "findings": "2-3 sentences: describe what was inspected on site, what condition it was found in, and any measurements taken. Use trade language.",
+  "causeD": "2-3 sentences: describe what physically caused the damage and what it did to the components. For surge/storm damage describe fusion, burning or vaporisation of components. For water describe corrosion and tracking. Be specific about what failed and why it can no longer operate safely.",
+  "rec": "1-2 sentences: state clearly what needs to happen — replacement or repair — and why it cannot continue operating as is.",
+  "repair": "1 sentence: state the specific scope of work required.",
+  "summary": "2-3 sentences: plain summary of what was found, what caused it and what needs to be done. Do NOT repeat the property address or year built."
+}`;
 
     const txt = await claude([{role:'user',content:prompt}], 1500);
     const m = txt.match(/\{[\s\S]*\}/);
@@ -705,11 +714,13 @@ EXISTING SECTIONS (these reflect the latest edits made by the technician — use
 
 IMPORTANT: If any of the sections above have been edited and now contain different facts, measurements, or conclusions than the original JOB DATA, treat the EXISTING SECTIONS as correct and current. Your rewrite must align with what is currently written in the other sections.`;
 
-  const RULES = `IMPORTANT RULES:
-- Be concise and direct — no repetition, no padding, get to the point
-- Write in formal prose paragraphs — NO bullet points, NO numbered lists, NO dot points
-- NO bold text, NO asterisks, NO stars
-- NO urgency language`;
+  const RULES = `TONE:
+- Write like an experienced licensed electrician — plain professional trade language, not overly formal
+- Use trade terminology: fusion damage, burnt terminals, failed protection, open circuit, surge damage, compromised insulation, tracking damage, etc.
+- For surge/storm damage: describe fusion, burning or vaporisation of components specifically
+- For water damage: describe corrosion, tracking, moisture ingress into enclosure
+- Concise and direct — no padding, no repetition, no urgency phrases
+- NO bullet points, NO bold text, NO asterisks`;
 
   try {
     let prompt, parseAsJson = false;
@@ -770,16 +781,16 @@ app.post('/api/generate/:id', requireAuth, async (req,res) => {
   saveReport(r);
   const d = r;
   const isNA = v => !v||['-','n/a','na','none','nil',''].includes(String(v).trim().toLowerCase());
-  const prompt = `Write a professional insurance inspection report for Prime Time Electricians.
+  const prompt = `You are an experienced licensed electrician writing an insurance inspection report for Prime Time Electricians. Write in plain professional trade language — clear, direct and practical.
 
-IMPORTANT RULES:
-- Be concise and direct — no repetition, no padding, no filler sentences
-- Section 1 (Site & Inspection Details) must use dot points for: address, date, time, insured, technician
-- All other sections must be formal prose paragraphs — no dot points, no bullet points
-- NO bold text, NO asterisks, NO stars
-- NO urgency language like "Urgent", "Immediate Action Required", "Priority Level"
-- NO "Prepared for", "Client", or "Report Prepared By" lines
-- Start directly with ## 1. Site & Inspection Details
+TONE GUIDE:
+- Use trade terminology: fusion damage, burnt terminals, failed protection devices, open circuit, surge damage, compromised insulation, tracking, earth fault etc.
+- For surge/storm damage: describe fusion damage, burnt or vaporised components, blown tracks, failed protective devices — be specific about what physically happened
+- For water damage: describe corrosion on terminals, moisture ingress, tracking damage, pitting on contacts
+- Section 1 (Site & Inspection Details): dot points for address, date, time, insured, technician
+- All other sections: plain prose, 2-3 sentences, no padding, no repetition
+- NO bullet points in sections 2-6, NO bold, NO asterisks, NO urgency language
+- NO "Prepared for/by" lines — start directly with ## 1. Site & Inspection Details
 
 SITE: ${d.address} | ${d.inspDate} ${d.inspTime||''} | Insured: ${d.insured||''} | Tech: ${d.tech||''}
 ITEM: ${[d.item,d.model,d.age,d.cable].filter(v=>!isNA(v)).join(', ')||'Not provided'}
